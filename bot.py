@@ -30,6 +30,9 @@ from config import Config
 from search_manager import SearchManager
 from yad2_scraper import Yad2Scraper
 
+# Create logs directory if it doesn't exist
+os.makedirs("logs", exist_ok=True)
+
 # Logging setup
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
