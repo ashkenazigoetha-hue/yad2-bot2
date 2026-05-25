@@ -1,0 +1,16 @@
+[Unit]
+Description=Yad2 Car Search Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_LINUX_USER
+WorkingDirectory=/path/to/yad2_bot
+ExecStart=/path/to/yad2_bot/venv/bin/python bot.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
