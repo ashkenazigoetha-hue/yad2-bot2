@@ -26,6 +26,7 @@ from telegram.ext import (
 )
 
 from config import Config
+from api import start_api_thread
 from search_manager import SearchManager
 from yad2_scraper import Yad2Scraper
 
@@ -525,6 +526,7 @@ def main():
     interval = config.POLL_INTERVAL_MINUTES * 60
     app.job_queue.run_repeating(poll_all_searches, interval=interval, first=30)
 
+    start_api_thread(int(os.getenv("PORT", 8080)))
     logger.info(f"🚀 Bot started! Polling every {config.POLL_INTERVAL_MINUTES} minutes.")
     app.run_polling(drop_pending_updates=True)
 
