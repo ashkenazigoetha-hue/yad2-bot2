@@ -9,7 +9,6 @@ import json
 import logging
 import os
 import re
-import signal
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -30,10 +29,9 @@ from config import Config
 from search_manager import SearchManager
 from yad2_scraper import Yad2Scraper
 
-# Create logs directory if it doesn't exist
+# Create logs directory
 os.makedirs("logs", exist_ok=True)
 
-# Logging setup
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
@@ -82,12 +80,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "🆘 *עזרה*\n\n"
-        "*/add\\_search* – הגדר חיפוש חדש עם פילטרים (יצרן, מחיר, שנה, ק\"מ)\n"
+        "*/add\\_search* – הגדר חיפוש חדש עם פילטרים\n"
         "*/my\\_searches* – ראה ונהל את כל החיפושים שלך\n"
-        "*/check\\_now* – הפעל בדיקה ידנית מיידית לכל החיפושים\n"
+        "*/check\\_now* – הפעל בדיקה ידנית מיידית\n"
         "*/stop\\_all* – עצור את כל ההתראות\n\n"
         "⏱ הבוט בודק כל *{interval}* דקות אוטומטית.\n"
-        "🔔 תקבל הודעה רק על מודעות *חדשות* שלא ראית קודם."
+        "🔔 תקבל הודעה רק על מודעות *חדשות* שלא ראית קודם.\n"
+        "💡 בכל שלב אפשר לשלוח /skip כדי לדלג."
     ).format(interval=config.POLL_INTERVAL_MINUTES)
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -95,8 +94,10 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ─── Add Search Conversation ──────────────────────────────────────────────────
 async def add_search_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["new_search"] = {}
+    context.user_data["_state"] = SEARCH_NAME
     await update.message.reply_text(
-        "🔍 *הוספת חיפוש חדש*\n\nשלב 1/8 – תן שם לחיפוש הזה (לדוגמה: \"פולו ידני\"):",
+        "🔍 *הוספת חיפוש חדש*\n\n"
+        "שלב 1/8 – תן שם לחיפוש (לדוגמה: \"פולו ידני\"):",
         parse_mode="Markdown",
     )
     return SEARCH_NAME
@@ -104,8 +105,11 @@ async def add_search_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def got_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["new_search"]["name"] = update.message.text.strip()
+    context.user_data["_state"] = SEARCH_MANUFACTURER
     await update.message.reply_text(
-        "🏭 שלב 2/8 – *יצרן* (לדוגמה: `toyota`, `honda`, `mazda`)\nאו שלח /skip לדלג:",
+        "🏭 שלב 2/8 – *יצרן*\n"
+        "לדוגמה: `toyota`, `honda`, `mazda`, `volkswagen`\n"
+        "שלח /skip לכל היצרנים:",
         parse_mode="Markdown",
     )
     return SEARCH_MANUFACTURER
@@ -113,8 +117,12 @@ async def got_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def got_manufacturer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["new_search"]["manufacturer"] = update.message.text.strip()
+    context.user_data["_state"] = SEARCH_MODEL
+    manufacturer = update.message.text.strip()
     await update.message.reply_text(
-        "🚘 שלב 3/8 – *דגם* (לדוגמה: `corolla`, `civic`)\nאו שלח /skip לדלג:",
+        f"🚘 שלב 3/8 – *דגם* של {manufacturer}\n"
+        "לדוגמה: `corolla`, `polo`, `civic`\n"
+        "שלח /skip לכל הדגמים:",
         parse_mode="Markdown",
     )
     return SEARCH_MODEL
@@ -122,8 +130,10 @@ async def got_manufacturer(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def got_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["new_search"]["model"] = update.message.text.strip()
+    context.user_data["_state"] = SEARCH_PRICE_MIN
     await update.message.reply_text(
-        "💰 שלב 4/8 – *מחיר מינימלי* (₪)\nאו שלח /skip לדלג:",
+        "💰 שלב 4/8 – *מחיר מינימלי* (₪)\n"
+        "שלח /skip לדלג:",
         parse_mode="Markdown",
     )
     return SEARCH_PRICE_MIN
@@ -132,11 +142,13 @@ async def got_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def got_price_min(update: Update, context: ContextTypes.DEFAULT_TYPE):
     val = update.message.text.strip()
     if not val.isdigit():
-        await update.message.reply_text("⚠️ אנא הכנס מספר בלבד:")
+        await update.message.reply_text("⚠️ אנא הכנס מספר בלבד (או /skip לדלג):")
         return SEARCH_PRICE_MIN
     context.user_data["new_search"]["price_min"] = int(val)
+    context.user_data["_state"] = SEARCH_PRICE_MAX
     await update.message.reply_text(
-        "💰 שלב 5/8 – *מחיר מקסימלי* (₪)\nאו שלח /skip לדלג:",
+        "💰 שלב 5/8 – *מחיר מקסימלי* (₪)\n"
+        "שלח /skip לדלג:",
         parse_mode="Markdown",
     )
     return SEARCH_PRICE_MAX
@@ -145,11 +157,14 @@ async def got_price_min(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def got_price_max(update: Update, context: ContextTypes.DEFAULT_TYPE):
     val = update.message.text.strip()
     if not val.isdigit():
-        await update.message.reply_text("⚠️ אנא הכנס מספר בלבד:")
+        await update.message.reply_text("⚠️ אנא הכנס מספר בלבד (או /skip לדלג):")
         return SEARCH_PRICE_MAX
     context.user_data["new_search"]["price_max"] = int(val)
+    context.user_data["_state"] = SEARCH_YEAR_MIN
     await update.message.reply_text(
-        "📅 שלב 6/8 – *שנת ייצור מינימלית* (לדוגמה: `2018`)\nאו שלח /skip לדלג:",
+        "📅 שלב 6/8 – *שנת ייצור מינימלית*\n"
+        "לדוגמה: `2018`\n"
+        "שלח /skip לדלג:",
         parse_mode="Markdown",
     )
     return SEARCH_YEAR_MIN
@@ -157,12 +172,14 @@ async def got_price_max(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def got_year_min(update: Update, context: ContextTypes.DEFAULT_TYPE):
     val = update.message.text.strip()
-    if not val.isdigit() or not (1990 <= int(val) <= 2025):
-        await update.message.reply_text("⚠️ אנא הכנס שנה תקינה (1990-2025):")
+    if not val.isdigit() or not (1990 <= int(val) <= 2026):
+        await update.message.reply_text("⚠️ אנא הכנס שנה תקינה (1990-2026) או /skip:")
         return SEARCH_YEAR_MIN
     context.user_data["new_search"]["year_min"] = int(val)
+    context.user_data["_state"] = SEARCH_YEAR_MAX
     await update.message.reply_text(
-        "📅 שלב 7/8 – *שנת ייצור מקסימלית*\nאו שלח /skip לדלג:",
+        "📅 שלב 7/8 – *שנת ייצור מקסימלית*\n"
+        "שלח /skip לדלג:",
         parse_mode="Markdown",
     )
     return SEARCH_YEAR_MAX
@@ -170,12 +187,15 @@ async def got_year_min(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def got_year_max(update: Update, context: ContextTypes.DEFAULT_TYPE):
     val = update.message.text.strip()
-    if not val.isdigit() or not (1990 <= int(val) <= 2025):
-        await update.message.reply_text("⚠️ אנא הכנס שנה תקינה (1990-2025):")
+    if not val.isdigit() or not (1990 <= int(val) <= 2026):
+        await update.message.reply_text("⚠️ אנא הכנס שנה תקינה (1990-2026) או /skip:")
         return SEARCH_YEAR_MAX
     context.user_data["new_search"]["year_max"] = int(val)
+    context.user_data["_state"] = SEARCH_KM_MAX
     await update.message.reply_text(
-        "🛣 שלב 8/8 – *קילומטראז' מקסימלי* (לדוגמה: `150000`)\nאו שלח /skip לדלג:",
+        "🛣 שלב 8/8 – *קילומטראז' מקסימלי*\n"
+        "לדוגמה: `150000`\n"
+        "שלח /skip לדלג:",
         parse_mode="Markdown",
     )
     return SEARCH_KM_MAX
@@ -184,30 +204,32 @@ async def got_year_max(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def got_km_max(update: Update, context: ContextTypes.DEFAULT_TYPE):
     val = update.message.text.strip()
     if not val.isdigit():
-        await update.message.reply_text("⚠️ אנא הכנס מספר בלבד:")
+        await update.message.reply_text("⚠️ אנא הכנס מספר בלבד (או /skip לדלג):")
         return SEARCH_KM_MAX
     context.user_data["new_search"]["km_max"] = int(val)
     return await show_search_summary(update, context)
 
 
 async def skip_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /skip – figure out which state we're in and advance."""
-    # peek at current state via conversation handler
-    # We just move forward by calling the "got_X" with None stored
-    state_map = {
-        SEARCH_MANUFACTURER: (SEARCH_MODEL, "🚘 שלב 3/8 – *דגם*\nאו שלח /skip לדלג:"),
-        SEARCH_MODEL: (SEARCH_PRICE_MIN, "💰 שלב 4/8 – *מחיר מינימלי* (₪)\nאו שלח /skip לדלג:"),
-        SEARCH_PRICE_MIN: (SEARCH_PRICE_MAX, "💰 שלב 5/8 – *מחיר מקסימלי* (₪)\nאו שלח /skip לדלג:"),
-        SEARCH_PRICE_MAX: (SEARCH_YEAR_MIN, "📅 שלב 6/8 – *שנת ייצור מינימלית*\nאו שלח /skip לדלג:"),
-        SEARCH_YEAR_MIN: (SEARCH_YEAR_MAX, "📅 שלב 7/8 – *שנת ייצור מקסימלית*\nאו שלח /skip לדלג:"),
-        SEARCH_YEAR_MAX: (SEARCH_KM_MAX, "🛣 שלב 8/8 – *קילומטראז' מקסימלי*\nאו שלח /skip לדלג:"),
-        SEARCH_KM_MAX: (None, None),
-    }
-    # We store current state in user_data so skip can know where we are
+    """Handle /skip – uses _state to know exactly where we are."""
     current = context.user_data.get("_state", SEARCH_MANUFACTURER)
-    nxt, msg = state_map.get(current, (None, None))
+
+    next_state_map = {
+        SEARCH_MANUFACTURER: (SEARCH_MODEL,     "🚘 שלב 3/8 – *דגם*\nשלח /skip לכל הדגמים:"),
+        SEARCH_MODEL:        (SEARCH_PRICE_MIN,  "💰 שלב 4/8 – *מחיר מינימלי* (₪)\nשלח /skip לדלג:"),
+        SEARCH_PRICE_MIN:    (SEARCH_PRICE_MAX,  "💰 שלב 5/8 – *מחיר מקסימלי* (₪)\nשלח /skip לדלג:"),
+        SEARCH_PRICE_MAX:    (SEARCH_YEAR_MIN,   "📅 שלב 6/8 – *שנת ייצור מינימלית*\nשלח /skip לדלג:"),
+        SEARCH_YEAR_MIN:     (SEARCH_YEAR_MAX,   "📅 שלב 7/8 – *שנת ייצור מקסימלית*\nשלח /skip לדלג:"),
+        SEARCH_YEAR_MAX:     (SEARCH_KM_MAX,     "🛣 שלב 8/8 – *קילומטראז' מקסימלי*\nשלח /skip לדלג:"),
+        SEARCH_KM_MAX:       (None, None),
+    }
+
+    nxt, msg = next_state_map.get(current, (None, None))
+
     if nxt is None:
+        # Last step – show summary
         return await show_search_summary(update, context)
+
     context.user_data["_state"] = nxt
     await update.message.reply_text(msg, parse_mode="Markdown")
     return nxt
@@ -215,26 +237,28 @@ async def skip_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_search_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     s = context.user_data["new_search"]
-    lines = [f"✅ *סיכום החיפוש:*\n", f"📌 שם: *{s.get('name', '—')}*"]
+    lines = ["✅ *סיכום החיפוש:*\n", f"📌 שם: *{s.get('name', '—')}*"]
     if s.get("manufacturer"):
         lines.append(f"🏭 יצרן: {s['manufacturer']}")
+    else:
+        lines.append("🏭 יצרן: כל היצרנים")
     if s.get("model"):
         lines.append(f"🚘 דגם: {s['model']}")
+    else:
+        lines.append("🚘 דגם: כל הדגמים")
     if s.get("price_min") or s.get("price_max"):
-        mn = f"₪{s['price_min']:,}" if s.get("price_min") else "ללא הגבלה"
-        mx = f"₪{s['price_max']:,}" if s.get("price_max") else "ללא הגבלה"
+        mn = f"₪{s['price_min']:,}" if s.get("price_min") else "ללא"
+        mx = f"₪{s['price_max']:,}" if s.get("price_max") else "ללא"
         lines.append(f"💰 מחיר: {mn} – {mx}")
     if s.get("year_min") or s.get("year_max"):
         lines.append(f"📅 שנה: {s.get('year_min','—')} – {s.get('year_max','—')}")
     if s.get("km_max"):
         lines.append(f"🛣 ק\"מ מקס': {s['km_max']:,}")
 
-    keyboard = [
-        [
-            InlineKeyboardButton("✅ שמור", callback_data="save_search"),
-            InlineKeyboardButton("❌ בטל", callback_data="cancel_search"),
-        ]
-    ]
+    keyboard = [[
+        InlineKeyboardButton("✅ שמור", callback_data="save_search"),
+        InlineKeyboardButton("❌ בטל", callback_data="cancel_search"),
+    ]]
     await update.message.reply_text(
         "\n".join(lines),
         parse_mode="Markdown",
@@ -276,12 +300,9 @@ async def my_searches(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📭 אין לך חיפושים שמורים.\nהשתמש ב-/add\\_search להוסיף!", parse_mode="Markdown"
         )
         return
-
     keyboard = []
     for sid, s in searches.items():
-        label = f"🔍 {s['name']}"
-        keyboard.append([InlineKeyboardButton(label, callback_data=f"view_{sid}")])
-
+        keyboard.append([InlineKeyboardButton(f"🔍 {s['name']}", callback_data=f"view_{sid}")])
     await update.message.reply_text(
         f"📋 *החיפושים שלך* ({len(searches)}):",
         parse_mode="Markdown",
@@ -299,12 +320,9 @@ async def view_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not s:
         await query.edit_message_text("❌ החיפוש לא נמצא.")
         return
-
     lines = [f"🔍 *{s['name']}*\n"]
-    if s.get("manufacturer"):
-        lines.append(f"🏭 יצרן: {s['manufacturer']}")
-    if s.get("model"):
-        lines.append(f"🚘 דגם: {s['model']}")
+    lines.append(f"🏭 יצרן: {s.get('manufacturer', 'כל היצרנים')}")
+    lines.append(f"🚘 דגם: {s.get('model', 'כל הדגמים')}")
     if s.get("price_min") or s.get("price_max"):
         mn = f"₪{s['price_min']:,}" if s.get("price_min") else "ללא"
         mx = f"₪{s['price_max']:,}" if s.get("price_max") else "ללא"
@@ -315,10 +333,9 @@ async def view_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"🛣 ק\"מ מקס': {s['km_max']:,}")
     seen = len(s.get("seen_ids", []))
     lines.append(f"\n👁 מודעות שנראו: {seen}")
-
     keyboard = [
         [
-            InlineKeyboardButton("🗑 מחק חיפוש", callback_data=f"del_{sid}"),
+            InlineKeyboardButton("🗑 מחק", callback_data=f"del_{sid}"),
             InlineKeyboardButton("🔄 בדוק עכשיו", callback_data=f"chk_{sid}"),
         ],
         [InlineKeyboardButton("« חזרה", callback_data="back_to_list")],
@@ -356,9 +373,7 @@ async def check_single(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if new_listings:
         for listing in new_listings:
             await send_listing(context.bot, int(user_id), listing, s["name"])
-        await context.bot.send_message(
-            int(user_id), f"✅ נמצאו {len(new_listings)} מודעות חדשות!"
-        )
+        await context.bot.send_message(int(user_id), f"✅ נמצאו {len(new_listings)} מודעות חדשות!")
     else:
         await context.bot.send_message(int(user_id), "😴 אין מודעות חדשות כרגע.")
 
@@ -401,29 +416,25 @@ async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ─── Polling Job ──────────────────────────────────────────────────────────────
 async def poll_all_searches(context: ContextTypes.DEFAULT_TYPE):
-    """Called periodically to check all searches for all users."""
     logger.info("⏱ Running scheduled poll...")
-    all_users = search_manager.get_all_users()
-    for user_id in all_users:
-        searches = search_manager.get_searches(user_id)
-        for sid, s in searches.items():
+    for user_id in search_manager.get_all_users():
+        for sid, s in search_manager.get_searches(user_id).items():
             try:
                 new_listings = await scraper.fetch_new_listings(s, search_manager, user_id, sid)
                 for listing in new_listings:
                     await send_listing(context.bot, int(user_id), listing, s["name"])
                     logger.info(f"Sent listing {listing['id']} to user {user_id}")
             except Exception as e:
-                logger.error(f"Error polling search {sid} for user {user_id}: {e}")
+                logger.error(f"Error polling {sid} for {user_id}: {e}")
 
 
-# ─── Listing Notification ─────────────────────────────────────────────────────
+# ─── Send Listing ─────────────────────────────────────────────────────────────
 async def send_listing(bot, chat_id: int, listing: dict, search_name: str):
     price = f"₪{listing['price']:,}" if listing.get("price") else "מחיר לא ידוע"
     year = listing.get("year", "—")
     km = f"{listing['km']:,} ק\"מ" if listing.get("km") else "—"
     city = listing.get("city", "—")
     title = listing.get("title", "רכב")
-
     text = (
         f"🚗 *מודעה חדשה – {search_name}*\n\n"
         f"📋 *{title}*\n"
@@ -435,13 +446,12 @@ async def send_listing(bot, chat_id: int, listing: dict, search_name: str):
     keyboard = [[InlineKeyboardButton("🔗 פתח ביד2", url=listing["url"])]]
     try:
         await bot.send_message(
-            chat_id,
-            text,
+            chat_id, text,
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
     except Exception as e:
-        logger.error(f"Failed to send listing to {chat_id}: {e}")
+        logger.error(f"Failed to send to {chat_id}: {e}")
 
 
 # ─── /stop_all ────────────────────────────────────────────────────────────────
@@ -455,16 +465,17 @@ async def stop_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     token = config.TELEGRAM_TOKEN
     if not token:
-        logger.error("❌ TELEGRAM_TOKEN לא מוגדר ב-.env")
+        logger.error("❌ TELEGRAM_TOKEN לא מוגדר")
         sys.exit(1)
 
     app = Application.builder().token(token).build()
 
-    # Conversation for adding a search
     conv = ConversationHandler(
         entry_points=[CommandHandler("add_search", add_search_start)],
         states={
-            SEARCH_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_name)],
+            SEARCH_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, got_name),
+            ],
             SEARCH_MANUFACTURER: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, got_manufacturer),
                 CommandHandler("skip", skip_step),
@@ -493,7 +504,9 @@ def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, got_km_max),
                 CommandHandler("skip", skip_step),
             ],
-            SEARCH_CONFIRM: [CallbackQueryHandler(confirm_search, pattern="^(save|cancel)_search$")],
+            SEARCH_CONFIRM: [
+                CallbackQueryHandler(confirm_search, pattern="^(save|cancel)_search$"),
+            ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
@@ -504,14 +517,11 @@ def main():
     app.add_handler(CommandHandler("check_now", check_now))
     app.add_handler(CommandHandler("stop_all", stop_all))
     app.add_handler(conv)
-
-    # Callback query handlers
     app.add_handler(CallbackQueryHandler(view_search, pattern="^view_"))
     app.add_handler(CallbackQueryHandler(delete_search, pattern="^del_"))
     app.add_handler(CallbackQueryHandler(check_single, pattern="^chk_"))
     app.add_handler(CallbackQueryHandler(back_to_list, pattern="^back_to_list$"))
 
-    # Polling job
     interval = config.POLL_INTERVAL_MINUTES * 60
     app.job_queue.run_repeating(poll_all_searches, interval=interval, first=30)
 
