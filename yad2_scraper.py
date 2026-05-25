@@ -7,26 +7,20 @@ import asyncio
 import json
 import logging
 import re
+from datetime import datetime, timedelta
 from typing import Optional
-from urllib.parse import urlencode, quote
+from urllib.parse import urlencode
 
 import aiohttp
 from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-# Yad2 search URL (browser-facing, returns Next.js page with embedded JSON)
 YAD2_SEARCH_URL = "https://www.yad2.co.il/vehicles/cars"
-
-# Yad2 internal API (works after session cookie)
 YAD2_API_URL = "https://gw.yad2.co.il/feed-search-legacy/vehicles/cars"
 
 BROWSER_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8",
     "Accept-Encoding": "gzip, deflate, br",
@@ -41,11 +35,7 @@ BROWSER_HEADERS = {
 }
 
 API_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "he-IL,he;q=0.9",
     "Referer": "https://www.yad2.co.il/vehicles/cars",
@@ -56,9 +46,7 @@ API_HEADERS = {
     "Sec-Fetch-Site": "same-site",
 }
 
-# Manufacturer name mapping Hebrew ↔ English
 MANUFACTURER_MAP = {
-    # English → Hebrew
     "toyota": "טויוטה",
     "honda": "הונדה",
     "mazda": "מאזדה",
@@ -95,15 +83,11 @@ MANUFACTURER_MAP = {
     "alfa": "אלפא רומיאו",
     "porsche": "פורשה",
     "infiniti": "אינפיניטי",
-    "acura": "אקורה",
-    "lincoln": "לינקולן",
     "cadillac": "קאדילק",
     "dodge": "דודג'",
     "chrysler": "קרייסלר",
-    "buick": "ביואיק",
 }
 
-# Yad2 manufacturer IDs (numeric) – used in API params
 YAD2_MANUFACTURER_IDS = {
     "טויוטה": 56,
     "הונדה": 19,
@@ -155,7 +139,6 @@ class Yad2Scraper:
         return self._session
 
     async def _init_cookies(self):
-        """Visit Yad2 homepage to get session cookies (bypasses Cloudflare basic check)."""
         if self._cookies_initialized:
             return
         session = await self._get_session()
@@ -172,10 +155,11 @@ class Yad2Scraper:
             logger.warning(f"Cookie init failed: {e}")
 
     def _build_api_params(self, search: dict) -> dict:
-      from datetime import datetime, timedelta
-params = {}
-week_ago = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
-params['fromDate'] = week_ago
+        params = {}
+
+        # Only show listings from the last 7 days
+        week_ago = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
+        params['fromDate'] = week_ago
 
         manufacturer = search.get("manufacturer", "").lower().strip()
         if manufacturer:
@@ -204,30 +188,22 @@ params['fromDate'] = week_ago
         return params
 
     def _build_search_url(self, search: dict) -> str:
-        """Build a Yad2 browser search URL for the listing link."""
         params = self._build_api_params(search)
         if params:
             return f"{YAD2_SEARCH_URL}?{urlencode(params)}"
         return YAD2_SEARCH_URL
 
     async def fetch_listings(self, search: dict) -> list[dict]:
-        """Fetch listings – tries API, falls back to HTML parsing."""
         await self._init_cookies()
-        
-        # Try method 1: Direct API
         listings = await self._fetch_via_api(search)
         if listings:
             return listings
-
-        # Fallback method 2: HTML parsing
         logger.info("API failed, trying HTML parsing...")
-        listings = await self._fetch_via_html(search)
-        return listings
+        return await self._fetch_via_html(search)
 
     async def _fetch_via_api(self, search: dict) -> list[dict]:
         session = await self._get_session()
         params = self._build_api_params(search)
-
         try:
             async with session.get(
                 YAD2_API_URL,
@@ -245,14 +221,11 @@ params['fromDate'] = week_ago
             return []
 
     async def _fetch_via_html(self, search: dict) -> list[dict]:
-        """Parse the Yad2 search page HTML to extract listings from embedded JSON."""
         session = await self._get_session()
         params = self._build_api_params(search)
-        url = YAD2_SEARCH_URL
-
         try:
             async with session.get(
-                url,
+                YAD2_SEARCH_URL,
                 params=params,
                 headers=BROWSER_HEADERS,
                 timeout=aiohttp.ClientTimeout(total=30),
@@ -268,21 +241,11 @@ params['fromDate'] = week_ago
             return []
 
     def _parse_html(self, html: str) -> list[dict]:
-        """Extract listings from Next.js __NEXT_DATA__ or window.__data__ JSON embedded in HTML."""
         listings = []
-
-        # Try __NEXT_DATA__ (Next.js)
         match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html, re.DOTALL)
         if match:
             try:
                 data = json.loads(match.group(1))
-                # Navigate the Next.js page props
-                feed = (
-                    data.get("props", {})
-                    .get("pageProps", {})
-                    .get("dehydratedState", {})
-                )
-                # Try to find feed_items anywhere in the nested structure
                 feed_items = self._deep_find(data, "feed_items")
                 if feed_items:
                     for item in feed_items:
@@ -295,7 +258,6 @@ params['fromDate'] = week_ago
             except Exception as e:
                 logger.debug(f"__NEXT_DATA__ parse error: {e}")
 
-        # Try window.__data__ pattern
         match2 = re.search(r'window\.__data__\s*=\s*({.*?});\s*</script>', html, re.DOTALL)
         if match2:
             try:
@@ -311,7 +273,6 @@ params['fromDate'] = week_ago
             except Exception as e:
                 logger.debug(f"window.__data__ parse error: {e}")
 
-        # Fallback: BeautifulSoup to find listing cards
         soup = BeautifulSoup(html, "lxml")
         cards = soup.find_all("div", attrs={"data-item-id": True})
         for card in cards:
@@ -333,7 +294,6 @@ params['fromDate'] = week_ago
         return listings
 
     def _deep_find(self, obj, key: str, max_depth: int = 10):
-        """Recursively search for a key in nested dicts/lists."""
         if max_depth == 0:
             return None
         if isinstance(obj, dict):
@@ -377,7 +337,6 @@ params['fromDate'] = week_ago
             if not ad_id:
                 return None
 
-            # Build title
             parts = []
             for key in ("manufacturer_he", "manufacturer", "ManufacturerHe"):
                 if item.get(key):
@@ -394,7 +353,6 @@ params['fromDate'] = week_ago
 
             title = " ".join(parts) if parts else item.get("title", "רכב")
 
-            # Price
             price = None
             for key in ("price", "Price", "primaryPrice"):
                 raw = item.get(key)
@@ -403,10 +361,8 @@ params['fromDate'] = week_ago
                     if price:
                         break
 
-            # Year
             year = item.get("year") or item.get("Year")
 
-            # KM
             km = None
             for key in ("km", "Km", "kilometers"):
                 raw = item.get(key)
@@ -435,16 +391,12 @@ params['fromDate'] = week_ago
     async def fetch_new_listings(
         self, search: dict, search_manager, user_id: str, search_id: str
     ) -> list[dict]:
-        """Return only listings not yet seen for this search."""
         all_listings = await self.fetch_listings(search)
         seen_ids = set(search_manager.get_seen_ids(user_id, search_id))
-
         new_listings = [l for l in all_listings if l["id"] not in seen_ids]
-
         if new_listings:
             new_ids = [l["id"] for l in new_listings]
             search_manager.mark_seen(user_id, search_id, new_ids)
-
         return new_listings
 
     async def close(self):
