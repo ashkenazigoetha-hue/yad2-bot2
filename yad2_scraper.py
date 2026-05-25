@@ -172,7 +172,10 @@ class Yad2Scraper:
             logger.warning(f"Cookie init failed: {e}")
 
     def _build_api_params(self, search: dict) -> dict:
-        params = {}
+      from datetime import datetime, timedelta
+params = {}
+week_ago = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
+params['fromDate'] = week_ago
 
         manufacturer = search.get("manufacturer", "").lower().strip()
         if manufacturer:
