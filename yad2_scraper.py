@@ -121,7 +121,7 @@ class Yad2Scraper:
                 timeout=30,
             )
             html = response.text
-            logger.info(f"yad2 fetch: status={response.status_code} len={len(html)}")
+            logger.info(f"yad2 fetch: url={url} status={response.status_code} len={len(html)}")
 
             if response.status_code != 200:
                 logger.warning(f"Bad status: {response.status_code}")
