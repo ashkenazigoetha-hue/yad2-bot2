@@ -446,12 +446,6 @@ async def stop_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🛑 כל {count} החיפושים נמחקו.")
 
 
-async def post_init(app: Application) -> None:
-    await app.bot.delete_webhook(drop_pending_updates=True)
-    me = await app.bot.get_me()
-    logger.info(f"✅ Bot connected: @{me.username} (id={me.id})")
-
-
 def main():
     token = config.TELEGRAM_TOKEN
     if not token:
@@ -462,7 +456,7 @@ def main():
     start_api_thread(int(os.getenv("PORT", 8080)), sm=search_manager)
     logger.info("🔧 API thread started")
 
-    app = Application.builder().token(token).post_init(post_init).build()
+    app = Application.builder().token(token).build()
 
     conv = ConversationHandler(
         entry_points=[CommandHandler("add_search", add_search_start)],
