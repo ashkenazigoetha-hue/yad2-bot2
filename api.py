@@ -75,14 +75,22 @@ class APIHandler(BaseHTTPRequestHandler):
         # GET /status
         if parsed.path == "/status":
             import sys, platform
+            from pathlib import Path
             users = search_manager.get_all_users()
             total_searches = sum(len(search_manager.get_searches(u)) for u in users)
+            pw_cache = Path.home() / ".cache" / "ms-playwright"
+            if pw_cache.exists():
+                chromium_dirs = [d.name for d in pw_cache.iterdir() if d.name.startswith("chromium")]
+                pw_status = f"installed: {chromium_dirs}"
+            else:
+                pw_status = "NOT INSTALLED - no ~/.cache/ms-playwright"
             self.send_json(200, {
                 "status": "ok",
                 "python": sys.version,
                 "platform": platform.platform(),
                 "users": len(users),
                 "total_searches": total_searches,
+                "playwright_chromium": pw_status,
             })
             return
 

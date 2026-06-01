@@ -210,7 +210,10 @@ class Yad2Scraper:
         return params
 
     async def fetch_listings(self, search: dict, ignore_date_filter: bool = False) -> list[dict]:
-        browser = await self._get_browser()
+        try:
+            browser = await self._get_browser()
+        except Exception as e:
+            raise RuntimeError(f"Playwright browser launch failed: {e}") from e
         context = await browser.new_context(
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
