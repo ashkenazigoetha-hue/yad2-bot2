@@ -376,22 +376,31 @@ async def back_to_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_chat.id)
-    searches = search_manager.get_searches(user_id)
-    if not searches:
-        await update.message.reply_text(
-            f"📭 אין לך חיפושים.\n🔑 Chat ID שלך: `{user_id}`",
-            parse_mode="Markdown"
-        )
-        return
-    await update.message.reply_text(f"🔄 בודק {len(searches)} חיפושים...")
-    total = 0
-    for sid, s in searches.items():
-        new_listings = await scraper.fetch_new_listings(s, search_manager, user_id, sid)
-        for listing in new_listings:
-            await send_listing(context.bot, int(user_id), listing, s["name"])
-            total += 1
-    msg = f"✅ נמצאו {total} מודעות חדשות!" if total else "😴 אין מודעות חדשות."
-    await update.message.reply_text(msg)
+    logger.info(f"check_now called by user {user_id}")
+    try:
+        searches = search_manager.get_searches(user_id)
+        if not searches:
+            await update.message.reply_text(
+                f"📭 אין לך חיפושים.\n🔑 Chat ID שלך: `{user_id}`",
+                parse_mode="Markdown"
+            )
+            return
+        await update.message.reply_text(f"🔄 בודק {len(searches)} חיפושים...")
+        total = 0
+        for sid, s in searches.items():
+            try:
+                new_listings = await scraper.fetch_new_listings(s, search_manager, user_id, sid)
+                for listing in new_listings:
+                    await send_listing(context.bot, int(user_id), listing, s["name"])
+                    total += 1
+            except Exception as e:
+                logger.error(f"Error fetching listings for search {sid}: {e}", exc_info=True)
+                await update.message.reply_text(f"⚠️ שגיאה בחיפוש '{s.get('name', sid)}': {e}")
+        msg = f"✅ נמצאו {total} מודעות חדשות!" if total else "😴 אין מודעות חדשות."
+        await update.message.reply_text(msg)
+    except Exception as e:
+        logger.error(f"check_now error: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ שגיאה: {e}")
 
 
 async def poll_all_searches(context: ContextTypes.DEFAULT_TYPE):
@@ -437,15 +446,23 @@ async def stop_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🛑 כל {count} החיפושים נמחקו.")
 
 
+async def post_init(app: Application) -> None:
+    await app.bot.delete_webhook(drop_pending_updates=True)
+    me = await app.bot.get_me()
+    logger.info(f"✅ Bot connected: @{me.username} (id={me.id})")
+
+
 def main():
     token = config.TELEGRAM_TOKEN
     if not token:
         logger.error("❌ TELEGRAM_TOKEN לא מוגדר")
         sys.exit(1)
 
+    logger.info("🔧 Starting API thread...")
     start_api_thread(int(os.getenv("PORT", 8080)), sm=search_manager)
+    logger.info("🔧 API thread started")
 
-    app = Application.builder().token(token).build()
+    app = Application.builder().token(token).post_init(post_init).build()
 
     conv = ConversationHandler(
         entry_points=[CommandHandler("add_search", add_search_start)],

@@ -72,6 +72,20 @@ class APIHandler(BaseHTTPRequestHandler):
             self.send_json(200, {"status": "ok"})
             return
 
+        # GET /status
+        if parsed.path == "/status":
+            import sys, platform
+            users = search_manager.get_all_users()
+            total_searches = sum(len(search_manager.get_searches(u)) for u in users)
+            self.send_json(200, {
+                "status": "ok",
+                "python": sys.version,
+                "platform": platform.platform(),
+                "users": len(users),
+                "total_searches": total_searches,
+            })
+            return
+
         self.send_json(404, {"error": "Not found"})
 
     def do_POST(self):
