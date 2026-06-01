@@ -1,179 +1,68 @@
 """
-Yad2 Scraper – headless Playwright browser to bypass bot protection
+Yad2 Scraper – curl-cffi mimics Chrome TLS fingerprint to bypass ShieldSquare.
+No headless browser needed.
 """
 
-import asyncio
 import json
 import logging
-import os
 import re
 from datetime import datetime, timedelta
 from typing import Optional
-from urllib.parse import urlencode, quote
+from urllib.parse import urlencode
 
-from playwright.async_api import async_playwright, Browser
-from playwright_stealth import stealth_async
+from curl_cffi.requests import AsyncSession
 
 logger = logging.getLogger(__name__)
 
 YAD2_SEARCH_URL = "https://www.yad2.co.il/vehicles/cars"
 
 MANUFACTURER_MAP = {
-    "toyota": "טויוטה",
-    "honda": "הונדה",
-    "mazda": "מאזדה",
-    "hyundai": "יונדאי",
-    "kia": "קיה",
-    "volkswagen": "פולקסווגן",
-    "vw": "פולקסווגן",
-    "ford": "פורד",
-    "subaru": "סובארו",
-    "nissan": "ניסאן",
-    "suzuki": "סוזוקי",
-    "seat": "סיאט",
-    "skoda": "סקודה",
-    "renault": "רנו",
-    "peugeot": "פיג'ו",
-    "citroen": "סיטרואן",
-    "bmw": "ב.מ.וו",
-    "mercedes": "מרצדס",
-    "benz": "מרצדס",
-    "audi": "אאודי",
-    "opel": "אופל",
-    "fiat": "פיאט",
-    "volvo": "וולוו",
-    "mitsubishi": "מיצובישי",
-    "chevrolet": "שברולט",
-    "mini": "מיני",
-    "jeep": "ג'יפ",
-    "lexus": "לקסוס",
-    "landrover": "לנד רובר",
-    "land rover": "לנד רובר",
-    "tesla": "טסלה",
-    "dacia": "דאצ'יה",
-    "alfa romeo": "אלפא רומיאו",
-    "alfa": "אלפא רומיאו",
-    "porsche": "פורשה",
-    "infiniti": "אינפיניטי",
-    "cadillac": "קאדילק",
-    "dodge": "דודג'",
-    "chrysler": "קרייסלר",
+    "toyota": "טויוטה", "honda": "הונדה", "mazda": "מאזדה",
+    "hyundai": "יונדאי", "kia": "קיה", "volkswagen": "פולקסווגן",
+    "vw": "פולקסווגן", "ford": "פורד", "subaru": "סובארו",
+    "nissan": "ניסאן", "suzuki": "סוזוקי", "seat": "סיאט",
+    "skoda": "סקודה", "renault": "רנו", "peugeot": "פיג'ו",
+    "citroen": "סיטרואן", "bmw": "ב.מ.וו", "mercedes": "מרצדס",
+    "benz": "מרצדס", "audi": "אאודי", "opel": "אופל",
+    "fiat": "פיאט", "volvo": "וולוו", "mitsubishi": "מיצובישי",
+    "chevrolet": "שברולט", "mini": "מיני", "jeep": "ג'יפ",
+    "lexus": "לקסוס", "land rover": "לנד רובר", "landrover": "לנד רובר",
+    "tesla": "טסלה", "dacia": "דאצ'יה", "alfa romeo": "אלפא רומיאו",
+    "alfa": "אלפא רומיאו", "porsche": "פורשה", "infiniti": "אינפיניטי",
 }
 
 YAD2_MANUFACTURER_IDS = {
-    "טויוטה": 56,
-    "הונדה": 19,
-    "מאזדה": 35,
-    "יונדאי": 20,
-    "קיה": 28,
-    "פולקסווגן": 59,
-    "פורד": 13,
-    "סובארו": 51,
-    "ניסאן": 42,
-    "סוזוקי": 52,
-    "סיאט": 47,
-    "סקודה": 48,
-    "רנו": 45,
-    "פיג'ו": 43,
-    "סיטרואן": 9,
-    "ב.מ.וו": 3,
-    "מרצדס": 37,
-    "אאודי": 1,
-    "אופל": 43,
-    "פיאט": 12,
-    "וולוו": 60,
-    "מיצובישי": 38,
-    "שברולט": 8,
-    "מיני": 39,
-    "ג'יפ": 26,
-    "לקסוס": 32,
-    "לנד רובר": 31,
-    "טסלה": 55,
-    "דאצ'יה": 68,
-    "פורשה": 44,
+    "טויוטה": 56, "הונדה": 19, "מאזדה": 35, "יונדאי": 20, "קיה": 28,
+    "פולקסווגן": 59, "פורד": 13, "סובארו": 51, "ניסאן": 42, "סוזוקי": 52,
+    "סיאט": 47, "סקודה": 48, "רנו": 45, "פיג'ו": 43, "סיטרואן": 9,
+    "ב.מ.וו": 3, "מרצדס": 37, "אאודי": 1, "אופל": 43, "פיאט": 12,
+    "וולוו": 60, "מיצובישי": 38, "שברולט": 8, "מיני": 39, "ג'יפ": 26,
+    "לקסוס": 32, "לנד רובר": 31, "טסלה": 55, "דאצ'יה": 68, "פורשה": 44,
 }
 
 MODEL_MAP = {
-    "corolla": "קורולה",
-    "camry": "קאמרי",
-    "yaris": "יאריס",
-    "rav4": "rav4",
-    "auris": "אוריס",
-    "civic": "סיוויק",
-    "accord": "אקורד",
-    "jazz": "ג'אז",
-    "cr-v": "cr-v",
-    "crv": "cr-v",
-    "hrv": "hr-v",
-    "hr-v": "hr-v",
-    "mazda3": "מאזדה 3",
-    "mazda 3": "מאזדה 3",
-    "mazda6": "מאזדה 6",
-    "mazda 6": "מאזדה 6",
-    "cx-5": "cx-5",
-    "cx5": "cx-5",
-    "cx-3": "cx-3",
-    "golf": "גולף",
-    "passat": "פאסאט",
-    "polo": "פולו",
-    "tiguan": "טיגואן",
-    "jetta": "ג'טה",
-    "focus": "פוקוס",
-    "kuga": "קוגה",
-    "fiesta": "פיאסטה",
-    "i20": "i20",
-    "i30": "i30",
-    "i35": "i35",
-    "tucson": "טוסון",
-    "santa fe": "סנטה פה",
-    "sonata": "סונטה",
-    "elantra": "אלנטרה",
-    "sportage": "ספורטז'",
-    "rio": "ריו",
-    "picanto": "פיקנטו",
-    "ceed": "סיד",
-    "stonic": "סטוניק",
-    "3 series": "סדרה 3",
-    "5 series": "סדרה 5",
-    "x5": "x5",
-    "x3": "x3",
-    "c class": "קלאס C",
-    "e class": "קלאס E",
-    "a class": "קלאס A",
-    "model 3": "מודל 3",
-    "model s": "מודל S",
-    "model y": "מודל Y",
-    "a4": "a4",
-    "a3": "a3",
-    "a6": "a6",
-    "q5": "q5",
-    "q3": "q3",
+    "corolla": "קורולה", "camry": "קאמרי", "yaris": "יאריס",
+    "auris": "אוריס", "civic": "סיוויק", "accord": "אקורד",
+    "jazz": "ג'אז", "cr-v": "cr-v", "crv": "cr-v",
+    "mazda3": "מאזדה 3", "mazda 3": "מאזדה 3", "mazda6": "מאזדה 6",
+    "cx-5": "cx-5", "cx5": "cx-5", "golf": "גולף", "passat": "פאסאט",
+    "polo": "פולו", "tiguan": "טיגואן", "jetta": "ג'טה",
+    "focus": "פוקוס", "kuga": "קוגה", "fiesta": "פיאסטה",
+    "i20": "i20", "i30": "i30", "tucson": "טוסון", "sonata": "סונטה",
+    "elantra": "אלנטרה", "sportage": "ספורטז'", "rio": "ריו",
+    "model 3": "מודל 3", "model s": "מודל S", "model y": "מודל Y",
+    "a4": "a4", "a3": "a3", "q5": "q5", "q3": "q3",
 }
 
 
 class Yad2Scraper:
     def __init__(self):
-        self._playwright = None
-        self._browser: Optional[Browser] = None
-        self._lock = asyncio.Lock()
+        self._session: Optional[AsyncSession] = None
 
-    async def _get_browser(self) -> Browser:
-        async with self._lock:
-            if self._playwright is None:
-                self._playwright = await async_playwright().start()
-            if self._browser is None or not self._browser.is_connected():
-                self._browser = await self._playwright.chromium.launch(
-                    headless=True,
-                    args=[
-                        "--no-sandbox",
-                        "--disable-setuid-sandbox",
-                        "--disable-dev-shm-usage",
-                        "--disable-accelerated-2d-canvas",
-                        "--disable-gpu",
-                        "--window-size=1280,800",
-                    ],
-                )
-        return self._browser
+    async def _get_session(self) -> AsyncSession:
+        if self._session is None:
+            self._session = AsyncSession()
+        return self._session
 
     def _normalize_model(self, model: str) -> str:
         if not model:
@@ -212,209 +101,81 @@ class Yad2Scraper:
         return params
 
     async def fetch_listings(self, search: dict, ignore_date_filter: bool = False) -> list[dict]:
+        params = self._build_params(search, ignore_date_filter)
+        url = f"{YAD2_SEARCH_URL}?{urlencode(params)}" if params else YAD2_SEARCH_URL
+
         try:
-            browser = await self._get_browser()
-        except Exception as e:
-            raise RuntimeError(f"Playwright browser launch failed: {e}") from e
-        context = await browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
-            locale="he-IL",
-            timezone_id="Asia/Jerusalem",
-            viewport={"width": 1280, "height": 800},
-            extra_http_headers={"Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8"},
-        )
-        try:
-            params = self._build_params(search, ignore_date_filter)
-            url = f"{YAD2_SEARCH_URL}?{urlencode(params)}" if params else YAD2_SEARCH_URL
-            page = await context.new_page()
-            await stealth_async(page)
-
-            captured_json = []
-
-            async def on_response(resp):
-                try:
-                    ct = resp.headers.get("content-type", "")
-                    if "json" in ct and resp.status == 200:
-                        u = resp.url
-                        if "vehicle" in u or "feed" in u or "/cars" in u:
-                            data = await resp.json()
-                            captured_json.append(data)
-                except Exception:
-                    pass
-
-            page.on("response", on_response)
-
-            logger.info(f"Playwright fetching: {url}")
-            await page.goto(url, wait_until="networkidle", timeout=60000)
-
-            # If ShieldSquare intercepted, wait for JS challenge to complete + redirect
-            if "perfdrive.com" in page.url or "shieldsquare" in page.url:
-                logger.info("ShieldSquare detected — waiting up to 25s for challenge to complete...")
-                try:
-                    await page.wait_for_url("**/yad2.co.il/**", timeout=25000)
-                    await page.wait_for_load_state("networkidle", timeout=20000)
-                    logger.info(f"Redirected back to yad2: {page.url}")
-                except Exception:
-                    logger.warning("ShieldSquare did not redirect — IP is blocked")
-                    # Try ScraperAPI if key is configured
-                    scraperapi_key = os.getenv("SCRAPERAPI_KEY", "")
-                    if scraperapi_key:
-                        return await self._fetch_via_scraperapi(url, scraperapi_key)
-                    return []
-
-            await page.wait_for_timeout(2000)
-            await page.mouse.move(300, 400)
-            await page.wait_for_timeout(500)
-            await page.evaluate("window.scrollTo(0, 300)")
-            await page.wait_for_timeout(1500)
-
-            try:
-                raw = await page.evaluate(
-                    "() => { const el = document.getElementById('__NEXT_DATA__'); return el ? el.textContent : null; }"
-                )
-                if raw:
-                    nd = json.loads(raw)
-                    listings = self._extract_listings(nd)
-                    if listings:
-                        logger.info(f"Got {len(listings)} listings from __NEXT_DATA__")
-                        return listings
-            except Exception as e:
-                logger.debug(f"__NEXT_DATA__ error: {e}")
-
-            for data in reversed(captured_json):
-                listings = self._extract_listings(data)
-                if listings:
-                    logger.info(f"Got {len(listings)} listings from captured API response")
-                    return listings
-
-            logger.warning("No listings found on page")
-            return []
-
-        except Exception as e:
-            logger.error(f"fetch_listings error: {e}")
-            return []
-        finally:
-            await context.close()
-
-    async def debug_page(self) -> dict:
-        """Returns diagnostic info about what yad2 shows."""
-        try:
-            browser = await self._get_browser()
-        except Exception as e:
-            return {"error": f"Browser launch failed: {e}"}
-
-        context = await browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
-            locale="he-IL",
-            timezone_id="Asia/Jerusalem",
-            viewport={"width": 1280, "height": 800},
-            extra_http_headers={"Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8"},
-        )
-        try:
-            page = await context.new_page()
-            await stealth_async(page)
-            await page.goto(
-                "https://www.yad2.co.il/vehicles/cars?manufacturer=56",
-                wait_until="networkidle",
-                timeout=60000,
+            session = await self._get_session()
+            response = await session.get(
+                url,
+                impersonate="chrome124",
+                headers={"Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8"},
+                timeout=30,
             )
-            await page.wait_for_timeout(3000)
-            title = await page.title()
-            current_url = page.url
-            html = await page.content()
-            return {
-                "title": title,
-                "url": current_url,
-                "html_length": len(html),
-                "has_next_data": "__NEXT_DATA__" in html,
-                "has_feed_items": "feed_items" in html,
-                "is_captcha": any(w in html.lower() for w in ["captcha", "robot", "verify", "shieldsquare", "perfdrive"]),
-                "html_preview": html[:600],
-            }
+            html = response.text
+            logger.info(f"yad2 fetch: status={response.status_code} len={len(html)}")
+
+            if response.status_code != 200:
+                logger.warning(f"Bad status: {response.status_code}")
+                return []
+
+            if "__NEXT_DATA__" not in html:
+                logger.warning("No __NEXT_DATA__ — likely blocked or CAPTCHA page")
+                return []
+
+            return self._parse_page(html)
+
         except Exception as e:
-            return {"error": str(e)}
-        finally:
-            await context.close()
+            logger.error(f"fetch_listings error: {e}", exc_info=True)
+            raise
 
-    def _extract_listings(self, data) -> list[dict]:
-        feed_items = self._deep_find(data, "feed_items") or []
-        listings = []
-        for item in feed_items:
-            if isinstance(item, dict) and item.get("type") == "ad":
-                parsed = self._parse_item(item)
-                if parsed:
-                    listings.append(parsed)
-        return listings
+    def _parse_page(self, html: str) -> list[dict]:
+        try:
+            m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
+            if not m:
+                return []
 
-    def _deep_find(self, obj, key: str, depth: int = 10):
-        if depth == 0:
-            return None
-        if isinstance(obj, dict):
-            if key in obj:
-                return obj[key]
-            for v in obj.values():
-                r = self._deep_find(v, key, depth - 1)
-                if r is not None:
-                    return r
-        elif isinstance(obj, list):
-            for item in obj:
-                r = self._deep_find(item, key, depth - 1)
-                if r is not None:
-                    return r
-        return None
+            nd = json.loads(m.group(1))
+            queries = nd['props']['pageProps']['dehydratedState']['queries']
+            feed_q = next((q for q in queries if q.get('queryKey', [None])[0] == 'feed'), None)
+            if not feed_q:
+                logger.warning("No feed query in dehydrated state")
+                return []
 
-    def _parse_number(self, text) -> Optional[int]:
-        digits = re.sub(r"[^\d]", "", str(text))
-        return int(digits) if digits else None
+            data = feed_q['state']['data']
+            listings = []
+            for cat in ['private', 'commercial', 'boost', 'platinum', 'solo']:
+                for item in data.get(cat, []):
+                    parsed = self._parse_item(item)
+                    if parsed:
+                        listings.append(parsed)
+
+            logger.info(f"Parsed {len(listings)} listings")
+            return listings
+
+        except Exception as e:
+            logger.error(f"_parse_page error: {e}", exc_info=True)
+            return []
 
     def _parse_item(self, item: dict) -> Optional[dict]:
         try:
-            ad_id = str(item.get("id") or item.get("orderId") or "")
+            token = item.get("token", "")
+            order_id = item.get("orderId")
+            ad_id = str(order_id or token)
             if not ad_id:
                 return None
 
             parts = []
-            for key in ("manufacturer_he", "manufacturer", "ManufacturerHe"):
-                if item.get(key):
-                    parts.append(str(item[key]))
-                    break
-            for key in ("model", "Model"):
-                if item.get(key):
-                    parts.append(str(item[key]))
-                    break
-            for key in ("subModel", "sub_model"):
-                if item.get(key):
-                    parts.append(str(item[key]))
-                    break
+            for field in ["manufacturer", "model", "subModel"]:
+                obj = item.get(field, {})
+                if isinstance(obj, dict) and obj.get("text"):
+                    parts.append(obj["text"])
+            title = " ".join(parts) if parts else "רכב"
 
-            title = " ".join(parts) or item.get("title", "רכב")
-
-            price = None
-            for key in ("price", "Price", "primaryPrice"):
-                if item.get(key):
-                    price = self._parse_number(item[key])
-                    if price:
-                        break
-
-            year = item.get("year") or item.get("Year")
-
-            km = None
-            for key in ("km", "Km", "kilometers"):
-                if item.get(key):
-                    km = self._parse_number(item[key])
-                    if km:
-                        break
-
-            city = item.get("city") or item.get("City") or item.get("cityText", "")
-            order_id = item.get("orderId") or item.get("id", "")
+            price = item.get("price")
+            year = item.get("vehicleDates", {}).get("yearOfProduction")
+            km = item.get("km") or item.get("kilometers")
+            city = item.get("address", {}).get("area", {}).get("text", "")
 
             return {
                 "id": ad_id,
@@ -423,38 +184,11 @@ class Yad2Scraper:
                 "year": year,
                 "km": km,
                 "city": city,
-                "url": f"https://www.yad2.co.il/item/{order_id}",
+                "url": f"https://www.yad2.co.il/item/{token or order_id}",
             }
         except Exception as e:
             logger.debug(f"parse_item error: {e}")
             return None
-
-    async def _fetch_via_scraperapi(self, url: str, api_key: str) -> list[dict]:
-        import aiohttp
-        scraper_url = f"http://api.scraperapi.com?api_key={api_key}&url={quote(url)}&render=true&country_code=il"
-        logger.info(f"Trying ScraperAPI for: {url}")
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(scraper_url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
-                    if resp.status != 200:
-                        logger.warning(f"ScraperAPI returned {resp.status}")
-                        return []
-                    html = await resp.text()
-                    if "feed_items" in html or "__NEXT_DATA__" in html:
-                        try:
-                            match = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
-                            if match:
-                                nd = json.loads(match.group(1))
-                                listings = self._extract_listings(nd)
-                                logger.info(f"ScraperAPI: got {len(listings)} listings")
-                                return listings
-                        except Exception as e:
-                            logger.warning(f"ScraperAPI parse error: {e}")
-                    logger.warning("ScraperAPI: no listings in response")
-                    return []
-        except Exception as e:
-            logger.error(f"ScraperAPI error: {e}")
-            return []
 
     async def fetch_new_listings(
         self, search: dict, search_manager, user_id: str, search_id: str
@@ -473,11 +207,32 @@ class Yad2Scraper:
             search_manager.mark_seen(user_id, search_id, [l["id"] for l in new_listings])
         return new_listings
 
-    async def close(self):
+    async def debug_page(self) -> dict:
         try:
-            if self._browser:
-                await self._browser.close()
-            if self._playwright:
-                await self._playwright.stop()
-        except Exception:
-            pass
+            session = await self._get_session()
+            response = await session.get(
+                "https://www.yad2.co.il/vehicles/cars?manufacturer=56",
+                impersonate="chrome124",
+                headers={"Accept-Language": "he-IL,he;q=0.9"},
+                timeout=30,
+            )
+            html = response.text
+            nd_present = "__NEXT_DATA__" in html
+            listings = self._parse_page(html) if nd_present else []
+            title = re.search(r'<title>(.*?)</title>', html)
+            return {
+                "status": response.status_code,
+                "url": str(response.url),
+                "html_length": len(html),
+                "has_next_data": nd_present,
+                "is_captcha": "shieldsquare" in html.lower() and not nd_present,
+                "listings_found": len(listings),
+                "title": title.group(1) if title else "N/A",
+                "html_preview": html[:300],
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def close(self):
+        if self._session:
+            await self._session.close()
