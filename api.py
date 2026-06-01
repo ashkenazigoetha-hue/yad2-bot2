@@ -84,10 +84,14 @@ class APIHandler(BaseHTTPRequestHandler):
                 pw_status = f"installed: {chromium_dirs}"
             else:
                 pw_status = "NOT INSTALLED - no ~/.cache/ms-playwright"
+            import os
+            db_url = os.getenv("DATABASE_URL", "")
+            storage = "postgres" if db_url else "file"
             self.send_json(200, {
                 "status": "ok",
                 "python": sys.version,
                 "platform": platform.platform(),
+                "storage": storage,
                 "users": len(users),
                 "total_searches": total_searches,
                 "playwright_chromium": pw_status,
