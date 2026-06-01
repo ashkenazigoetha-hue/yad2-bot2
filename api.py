@@ -136,7 +136,10 @@ def run_api(port: int = 8080):
     server.serve_forever()
 
 
-def start_api_thread(port: int = 8080):
+def start_api_thread(port: int = 8080, sm=None):
+    global search_manager
+    if sm is not None:
+        search_manager = sm
     t = threading.Thread(target=run_api, args=(port,), daemon=True)
     t.start()
     return t

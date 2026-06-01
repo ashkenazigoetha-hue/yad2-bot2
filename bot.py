@@ -443,7 +443,7 @@ def main():
         logger.error("❌ TELEGRAM_TOKEN לא מוגדר")
         sys.exit(1)
 
-    start_api_thread(int(os.getenv("PORT", 8080)))
+    start_api_thread(int(os.getenv("PORT", 8080)), sm=search_manager)
 
     app = Application.builder().token(token).build()
 
