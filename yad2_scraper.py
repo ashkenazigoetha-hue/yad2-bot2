@@ -144,13 +144,18 @@ class Yad2Scraper:
                 return []
 
             nd = json.loads(m.group(1))
-            queries = nd['props']['pageProps']['dehydratedState']['queries']
+            pp = nd['props']['pageProps']
+            logger.info(f"totalFeedItems={pp.get('totalFeedItems')} hasFeed={pp.get('hasFeedResults')}")
+            queries = pp.get('dehydratedState', {}).get('queries', [])
+            logger.info(f"queries in dehydrated state: {len(queries)}")
             feed_q = next((q for q in queries if q.get('queryKey', [None])[0] == 'feed'), None)
             if not feed_q:
-                logger.warning("No feed query in dehydrated state")
+                logger.warning(f"No feed query. Keys: {[q.get('queryKey') for q in queries]}")
                 return []
 
             data = feed_q['state']['data']
+            cat_counts = {c: len(data.get(c, [])) for c in ['private','commercial','boost','platinum','solo']}
+            logger.info(f"Categories: {cat_counts}")
             listings = []
             for cat in ['private', 'commercial', 'boost', 'platinum', 'solo']:
                 for item in data.get(cat, []):
