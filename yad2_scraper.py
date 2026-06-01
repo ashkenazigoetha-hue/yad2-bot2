@@ -5,10 +5,11 @@ Yad2 Scraper – headless Playwright browser to bypass bot protection
 import asyncio
 import json
 import logging
+import os
 import re
 from datetime import datetime, timedelta
 from typing import Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
 
 from playwright.async_api import async_playwright, Browser
 from playwright_stealth import stealth_async
@@ -249,13 +250,27 @@ class Yad2Scraper:
 
             logger.info(f"Playwright fetching: {url}")
             await page.goto(url, wait_until="networkidle", timeout=60000)
-            await page.wait_for_timeout(3000)
 
-            # simulate human scroll
+            # If ShieldSquare intercepted, wait for JS challenge to complete + redirect
+            if "perfdrive.com" in page.url or "shieldsquare" in page.url:
+                logger.info("ShieldSquare detected — waiting up to 25s for challenge to complete...")
+                try:
+                    await page.wait_for_url("**/yad2.co.il/**", timeout=25000)
+                    await page.wait_for_load_state("networkidle", timeout=20000)
+                    logger.info(f"Redirected back to yad2: {page.url}")
+                except Exception:
+                    logger.warning("ShieldSquare did not redirect — IP is blocked")
+                    # Try ScraperAPI if key is configured
+                    scraperapi_key = os.getenv("SCRAPERAPI_KEY", "")
+                    if scraperapi_key:
+                        return await self._fetch_via_scraperapi(url, scraperapi_key)
+                    return []
+
+            await page.wait_for_timeout(2000)
             await page.mouse.move(300, 400)
             await page.wait_for_timeout(500)
             await page.evaluate("window.scrollTo(0, 300)")
-            await page.wait_for_timeout(2000)
+            await page.wait_for_timeout(1500)
 
             try:
                 raw = await page.evaluate(
@@ -413,6 +428,33 @@ class Yad2Scraper:
         except Exception as e:
             logger.debug(f"parse_item error: {e}")
             return None
+
+    async def _fetch_via_scraperapi(self, url: str, api_key: str) -> list[dict]:
+        import aiohttp
+        scraper_url = f"http://api.scraperapi.com?api_key={api_key}&url={quote(url)}&render=true&country_code=il"
+        logger.info(f"Trying ScraperAPI for: {url}")
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(scraper_url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                    if resp.status != 200:
+                        logger.warning(f"ScraperAPI returned {resp.status}")
+                        return []
+                    html = await resp.text()
+                    if "feed_items" in html or "__NEXT_DATA__" in html:
+                        try:
+                            match = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
+                            if match:
+                                nd = json.loads(match.group(1))
+                                listings = self._extract_listings(nd)
+                                logger.info(f"ScraperAPI: got {len(listings)} listings")
+                                return listings
+                        except Exception as e:
+                            logger.warning(f"ScraperAPI parse error: {e}")
+                    logger.warning("ScraperAPI: no listings in response")
+                    return []
+        except Exception as e:
+            logger.error(f"ScraperAPI error: {e}")
+            return []
 
     async def fetch_new_listings(
         self, search: dict, search_manager, user_id: str, search_id: str
