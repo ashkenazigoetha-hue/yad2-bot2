@@ -5,6 +5,7 @@ No headless browser needed.
 
 import json
 import logging
+import os
 import re
 from datetime import datetime, timedelta
 from typing import Optional
@@ -61,7 +62,10 @@ class Yad2Scraper:
 
     async def _get_session(self) -> AsyncSession:
         if self._session is None:
-            self._session = AsyncSession()
+            proxy = os.getenv("PROXY_URL", "")
+            self._session = AsyncSession(proxies={"https": proxy, "http": proxy} if proxy else None)
+            if proxy:
+                logger.info(f"Using proxy: {proxy.split('@')[-1]}")
         return self._session
 
     def _normalize_model(self, model: str) -> str:
