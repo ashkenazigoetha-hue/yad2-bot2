@@ -11,6 +11,7 @@ from typing import Optional
 from urllib.parse import urlencode
 
 from playwright.async_api import async_playwright, Browser
+from playwright_stealth import stealth_async
 
 logger = logging.getLogger(__name__)
 
@@ -229,12 +230,7 @@ class Yad2Scraper:
             params = self._build_params(search, ignore_date_filter)
             url = f"{YAD2_SEARCH_URL}?{urlencode(params)}" if params else YAD2_SEARCH_URL
             page = await context.new_page()
-
-            await page.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-                Object.defineProperty(navigator, 'languages', { get: () => ['he-IL', 'he', 'en-US'] });
-                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
-            """)
+            await stealth_async(page)
 
             captured_json = []
 
