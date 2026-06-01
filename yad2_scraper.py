@@ -154,12 +154,12 @@ class Yad2Scraper:
         except Exception as e:
             logger.warning(f"Cookie init failed: {e}")
 
-    def _build_api_params(self, search: dict) -> dict:
+    def _build_api_params(self, search: dict, ignore_date_filter: bool = False) -> dict:
         params = {}
 
-        # Only show listings from the last 7 days
-        week_ago = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
-        params['fromDate'] = week_ago
+        if not ignore_date_filter:
+            week_ago = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
+            params['fromDate'] = week_ago
 
         manufacturer = search.get("manufacturer", "").lower().strip()
         if manufacturer:
@@ -193,17 +193,17 @@ class Yad2Scraper:
             return f"{YAD2_SEARCH_URL}?{urlencode(params)}"
         return YAD2_SEARCH_URL
 
-    async def fetch_listings(self, search: dict) -> list[dict]:
+    async def fetch_listings(self, search: dict, ignore_date_filter: bool = False) -> list[dict]:
         await self._init_cookies()
-        listings = await self._fetch_via_api(search)
+        listings = await self._fetch_via_api(search, ignore_date_filter)
         if listings:
             return listings
         logger.info("API failed, trying HTML parsing...")
-        return await self._fetch_via_html(search)
+        return await self._fetch_via_html(search, ignore_date_filter)
 
-    async def _fetch_via_api(self, search: dict) -> list[dict]:
+    async def _fetch_via_api(self, search: dict, ignore_date_filter: bool = False) -> list[dict]:
         session = await self._get_session()
-        params = self._build_api_params(search)
+        params = self._build_api_params(search, ignore_date_filter)
         try:
             async with session.get(
                 YAD2_API_URL,
@@ -220,9 +220,9 @@ class Yad2Scraper:
             logger.warning(f"API fetch error: {e}")
             return []
 
-    async def _fetch_via_html(self, search: dict) -> list[dict]:
+    async def _fetch_via_html(self, search: dict, ignore_date_filter: bool = False) -> list[dict]:
         session = await self._get_session()
-        params = self._build_api_params(search)
+        params = self._build_api_params(search, ignore_date_filter)
         try:
             async with session.get(
                 YAD2_SEARCH_URL,
@@ -391,12 +391,20 @@ class Yad2Scraper:
     async def fetch_new_listings(
         self, search: dict, search_manager, user_id: str, search_id: str
     ) -> list[dict]:
-        all_listings = await self.fetch_listings(search)
         seen_ids = set(search_manager.get_seen_ids(user_id, search_id))
+        is_first_run = len(seen_ids) == 0
+
+        all_listings = await self.fetch_listings(search, ignore_date_filter=is_first_run)
+
         new_listings = [l for l in all_listings if l["id"] not in seen_ids]
+
+        if is_first_run:
+            # Mark all current listings as seen so future polls only send truly new ones
+            search_manager.mark_seen(user_id, search_id, [l["id"] for l in all_listings])
+            return new_listings[:15]
+
         if new_listings:
-            new_ids = [l["id"] for l in new_listings]
-            search_manager.mark_seen(user_id, search_id, new_ids)
+            search_manager.mark_seen(user_id, search_id, [l["id"] for l in new_listings])
         return new_listings
 
     async def close(self):
