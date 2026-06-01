@@ -248,8 +248,14 @@ class Yad2Scraper:
             page.on("response", on_response)
 
             logger.info(f"Playwright fetching: {url}")
-            await page.goto(url, wait_until="domcontentloaded", timeout=45000)
-            await page.wait_for_timeout(5000)
+            await page.goto(url, wait_until="networkidle", timeout=60000)
+            await page.wait_for_timeout(3000)
+
+            # simulate human scroll
+            await page.mouse.move(300, 400)
+            await page.wait_for_timeout(500)
+            await page.evaluate("window.scrollTo(0, 300)")
+            await page.wait_for_timeout(2000)
 
             try:
                 raw = await page.evaluate(
@@ -276,6 +282,50 @@ class Yad2Scraper:
         except Exception as e:
             logger.error(f"fetch_listings error: {e}")
             return []
+        finally:
+            await context.close()
+
+    async def debug_page(self) -> dict:
+        """Returns diagnostic info about what yad2 shows."""
+        try:
+            browser = await self._get_browser()
+        except Exception as e:
+            return {"error": f"Browser launch failed: {e}"}
+
+        context = await browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            locale="he-IL",
+            timezone_id="Asia/Jerusalem",
+            viewport={"width": 1280, "height": 800},
+            extra_http_headers={"Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8"},
+        )
+        try:
+            page = await context.new_page()
+            await stealth_async(page)
+            await page.goto(
+                "https://www.yad2.co.il/vehicles/cars?manufacturer=56",
+                wait_until="networkidle",
+                timeout=60000,
+            )
+            await page.wait_for_timeout(3000)
+            title = await page.title()
+            current_url = page.url
+            html = await page.content()
+            return {
+                "title": title,
+                "url": current_url,
+                "html_length": len(html),
+                "has_next_data": "__NEXT_DATA__" in html,
+                "has_feed_items": "feed_items" in html,
+                "is_captcha": any(w in html.lower() for w in ["captcha", "robot", "verify", "shieldsquare", "perfdrive"]),
+                "html_preview": html[:600],
+            }
+        except Exception as e:
+            return {"error": str(e)}
         finally:
             await context.close()
 

@@ -440,6 +440,22 @@ async def send_listing(bot, chat_id: int, listing: dict, search_name: str):
         logger.error(f"Failed to send to {chat_id}: {e}")
 
 
+async def debug_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🔍 בודק מה Playwright רואה ביד2...")
+    try:
+        info = await scraper.debug_page()
+        lines = [f"*Debug Report*\n"]
+        for k, v in info.items():
+            if k == "html_preview":
+                continue
+            lines.append(f"`{k}`: {v}")
+        if "html_preview" in info:
+            lines.append(f"\n*HTML preview:*\n```\n{str(info['html_preview'])[:800]}\n```")
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ שגיאה: {e}")
+
+
 async def stop_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_chat.id)
     count = search_manager.delete_all_searches(user_id)
@@ -480,6 +496,7 @@ def main():
     app.add_handler(CommandHandler("my_searches", my_searches))
     app.add_handler(CommandHandler("check_now", check_now))
     app.add_handler(CommandHandler("stop_all", stop_all))
+    app.add_handler(CommandHandler("debug_now", debug_now))
     app.add_handler(conv)
     app.add_handler(CallbackQueryHandler(view_search, pattern="^view_"))
     app.add_handler(CallbackQueryHandler(delete_search, pattern="^del_"))
