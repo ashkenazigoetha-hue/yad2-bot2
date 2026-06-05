@@ -216,6 +216,28 @@ class Yad2Scraper:
                 or item.get("city", "")
             )
 
+            images = item.get("images", [])
+            photo_url = None
+            if images and isinstance(images, list):
+                first = images[0]
+                if isinstance(first, dict):
+                    photo_url = (
+                        first.get("src") or first.get("url")
+                        or first.get("uri") or first.get("thumbnail")
+                    )
+                elif isinstance(first, str):
+                    photo_url = first
+
+            hand = item.get("hand") or item.get("ownerID") or item.get("handNum")
+
+            ownership_obj = item.get("ownerType") or item.get("ownership") or {}
+            if isinstance(ownership_obj, dict):
+                ownership = ownership_obj.get("text") or ownership_obj.get("value") or ""
+            elif isinstance(ownership_obj, str):
+                ownership = ownership_obj
+            else:
+                ownership = ""
+
             link_id = token or order_id
             return {
                 "id": ad_id,
@@ -225,6 +247,9 @@ class Yad2Scraper:
                 "km": km,
                 "city": city,
                 "url": f"https://www.yad2.co.il/item/{link_id}",
+                "photo_url": photo_url,
+                "hand": hand,
+                "ownership": ownership,
             }
         except Exception as e:
             logger.debug(f"parse_item error: {e}")

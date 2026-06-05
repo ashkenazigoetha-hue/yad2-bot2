@@ -623,22 +623,37 @@ async def send_listing(bot, chat_id: int, listing: dict, search_name: str):
     km = f"{listing['km']:,} ק\"מ" if listing.get("km") else "—"
     city = listing.get("city", "—")
     title = listing.get("title", "רכב")
+    hand = f"יד {listing['hand']}" if listing.get("hand") else "—"
+    ownership = listing.get("ownership") or "—"
+    photo_url = listing.get("photo_url")
+
     text = (
-        f"🚗 *מודעה חדשה – {search_name}*\n\n"
-        f"📋 *{title}*\n"
-        f"💰 מחיר: {price}\n"
-        f"📅 שנה: {year}\n"
-        f"🛣 ק\"מ: {km}\n"
-        f"📍 עיר: {city}\n"
+        f"🚗 *{title}*\n"
+        f"💰 {price}  |  📅 {year}\n"
+        f"🛣 {km}  |  🤚 {hand}\n"
+        f"👤 בעלות: {ownership}\n"
+        f"📍 {city}"
     )
     keyboard = [[InlineKeyboardButton("🔗 פתח ביד2", url=listing["url"])]]
+    markup = InlineKeyboardMarkup(keyboard)
     try:
-        await bot.send_message(
-            chat_id, text, parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-        )
+        if photo_url:
+            await bot.send_photo(
+                chat_id, photo=photo_url,
+                caption=text, parse_mode="Markdown",
+                reply_markup=markup,
+            )
+        else:
+            await bot.send_message(
+                chat_id, text, parse_mode="Markdown",
+                reply_markup=markup,
+            )
     except Exception as e:
         logger.error(f"Failed to send to {chat_id}: {e}")
+        try:
+            await bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
+        except Exception as e2:
+            logger.error(f"Fallback send failed for {chat_id}: {e2}")
 
 
 async def debug_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
