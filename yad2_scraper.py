@@ -100,7 +100,7 @@ class Yad2Scraper:
         if search.get("year_max"):
             params["yearEnd"] = search["year_max"]
         if search.get("km_max"):
-            params["km"] = search["km_max"]
+            params["kmEnd"] = search["km_max"]
 
         return params
 
