@@ -679,6 +679,15 @@ async def logs_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ שגיאה: {e}")
 
 
+async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    count = search_manager.clear_all_seen_ids()
+    await update.message.reply_text(
+        f"🗑 היסטוריה נמחקה — {count} חיפושים אופסו.\n"
+        "מהבדיקה הבאה הבוט ישלח את כל המודעות הקיימות מחדש.",
+        parse_mode="Markdown"
+    )
+
+
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users = search_manager.get_all_users()
     total = sum(len(search_manager.get_searches(u)) for u in users)
@@ -729,6 +738,7 @@ def main():
     app.add_handler(CommandHandler("logs", logs_cmd))
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("show_current", show_current))
+    app.add_handler(CommandHandler("clear_history", clear_history))
     app.add_handler(conv)
     app.add_handler(CallbackQueryHandler(view_search, pattern="^view_"))
     app.add_handler(CallbackQueryHandler(delete_search, pattern="^del_"))

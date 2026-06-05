@@ -141,6 +141,32 @@ class SearchManager:
         self._save()
         return count
 
+    def clear_all_seen_ids(self) -> int:
+        users = self.get_all_users()
+        count = 0
+        for user_id in users:
+            if self._mode == "postgres":
+                conn = self._conn()
+                with conn.cursor() as cur:
+                    cur.execute("SELECT search_id, data FROM searches WHERE user_id = %s", (user_id,))
+                    rows = cur.fetchall()
+                    for sid, data_str in rows:
+                        data = json.loads(data_str)
+                        data["seen_ids"] = []
+                        cur.execute(
+                            "UPDATE searches SET data = %s WHERE user_id = %s AND search_id = %s",
+                            (json.dumps(data), user_id, sid),
+                        )
+                        count += 1
+                conn.commit()
+            else:
+                for sid in self._db.get(user_id, {}):
+                    self._db[user_id][sid]["seen_ids"] = []
+                    count += 1
+        if self._mode == "file":
+            self._save()
+        return count
+
     # ── Seen IDs ───────────────────────────────────────────────────────────────
 
     def get_seen_ids(self, user_id: str, search_id: str) -> List[str]:
