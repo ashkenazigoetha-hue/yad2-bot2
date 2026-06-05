@@ -104,31 +104,37 @@ class Yad2Scraper:
 
         return params
 
+    async def _fetch_url(self, url: str) -> list[dict]:
+        session = await self._get_session()
+        response = await session.get(
+            url,
+            impersonate="chrome124",
+            headers={"Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8"},
+            timeout=30,
+        )
+        html = response.text
+        logger.info(f"yad2 fetch: url={url} status={response.status_code} len={len(html)}")
+        if response.status_code != 200:
+            logger.warning(f"Bad status: {response.status_code}")
+            return []
+        if "__NEXT_DATA__" not in html:
+            logger.warning("No __NEXT_DATA__ — likely blocked or CAPTCHA page")
+            return []
+        return self._parse_page(html)
+
     async def fetch_listings(self, search: dict) -> list[dict]:
-        params = self._build_params(search)
-        url = f"{YAD2_SEARCH_URL}?{urlencode(params)}" if params else YAD2_SEARCH_URL
-
         try:
-            session = await self._get_session()
-            response = await session.get(
-                url,
-                impersonate="chrome124",
-                headers={"Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8"},
-                timeout=30,
-            )
-            html = response.text
-            logger.info(f"yad2 fetch: url={url} status={response.status_code} len={len(html)}")
+            params = self._build_params(search)
+            url = f"{YAD2_SEARCH_URL}?{urlencode(params)}" if params else YAD2_SEARCH_URL
+            results = await self._fetch_url(url)
 
-            if response.status_code != 200:
-                logger.warning(f"Bad status: {response.status_code}")
-                return []
+            if not results and params.get("model"):
+                logger.info("No results with model filter — retrying without model")
+                params_no_model = {k: v for k, v in params.items() if k != "model"}
+                url2 = f"{YAD2_SEARCH_URL}?{urlencode(params_no_model)}" if params_no_model else YAD2_SEARCH_URL
+                results = await self._fetch_url(url2)
 
-            if "__NEXT_DATA__" not in html:
-                logger.warning("No __NEXT_DATA__ — likely blocked or CAPTCHA page")
-                return []
-
-            return self._parse_page(html)
-
+            return results
         except Exception as e:
             logger.error(f"fetch_listings error: {e}", exc_info=True)
             raise
