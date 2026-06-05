@@ -38,10 +38,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 (
-    SEARCH_NAME, SEARCH_MANUFACTURER, SEARCH_MODEL,
+    SEARCH_NAME, SEARCH_MANUFACTURER, SEARCH_MODEL, SEARCH_SUBMODEL,
     SEARCH_PRICE_MIN, SEARCH_PRICE_MAX, SEARCH_YEAR_MIN,
     SEARCH_YEAR_MAX, SEARCH_KM_MAX, SEARCH_CONFIRM,
-) = range(9)
+) = range(10)
 
 MANUFACTURERS = [
     "טויוטה", "הונדה", "מאזדה", "יונדאי", "קיה", "פולקסווגן",
@@ -87,6 +87,39 @@ MODELS_BY_MANUFACTURER = {
     "אינפיניטי": ["Q30", "Q50", "QX30", "QX50", "QX70"],
     "יגואר": ["XE", "XF", "XJ", "E-PACE", "F-PACE", "I-PACE"],
     "קאדילק": ["CTS", "ATS", "SRX", "XT5", "Escalade"],
+}
+
+SUBMODELS_BY_MODEL = {
+    "קורולה": ["E120", "E150", "E160", "E170", "E210", "Cross"],
+    "קאמרי": ["V50", "V70", "V40"],
+    "יאריס": ["XP10", "XP90", "XP130", "XP150", "XP210"],
+    "RAV4": ["XA10", "XA20", "XA30", "XA40", "XA50"],
+    "פריוס": ["XW10", "XW20", "XW30", "XW50"],
+    "סיוויק": ["EJ", "EM", "EP", "FD", "FB", "FC", "FL"],
+    "גולף": ["Golf 4", "Golf 5", "Golf 6", "Golf 7", "Golf 8"],
+    "פאסאט": ["B5", "B6", "B7", "B8"],
+    "פולו": ["6N", "9N", "6R", "AW"],
+    "טיגואן": ["5N", "AD", "BW"],
+    "מאזדה 3": ["BK", "BL", "BM", "BP"],
+    "מאזדה 6": ["GG", "GH", "GJ", "GL"],
+    "CX-5": ["KE", "KF"],
+    "i30": ["FD", "GD", "PD", "CN7"],
+    "טוסון": ["JM", "LM", "TL", "NX4"],
+    "סונטה": ["NF", "YF", "LF", "DN8"],
+    "אלנטרה": ["HD", "MD", "AD", "CN7"],
+    "ספורטז'": ["SL", "QL", "NQ5"],
+    "סדרה 3": ["E46", "E90", "F30", "G20"],
+    "סדרה 5": ["E60", "F10", "G30"],
+    "X3": ["E83", "F25", "G01"],
+    "X5": ["E53", "E70", "F15", "G05"],
+    "C קלאס": ["W203", "W204", "W205", "W206"],
+    "E קלאס": ["W210", "W211", "W212", "W213"],
+    "A קלאס": ["W168", "W169", "W176", "W177"],
+    "A4": ["B6", "B7", "B8", "B9"],
+    "A3": ["8L", "8P", "8V", "8Y"],
+    "Q5": ["8R", "FY"],
+    "אוקטביה": ["1U", "1Z", "5E", "NX"],
+    "פאביה": ["6Y", "5J", "NJ"],
 }
 
 config = Config()
@@ -143,16 +176,6 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def add_search_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["new_search"] = {}
-    context.user_data["_state"] = SEARCH_NAME
-    await update.message.reply_text(
-        "🔍 *הוספת חיפוש חדש*\n\nשלב 1/8 – תן שם לחיפוש:",
-        parse_mode="Markdown",
-    )
-    return SEARCH_NAME
-
-
-async def got_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["new_search"]["name"] = update.message.text.strip()
     context.user_data["_state"] = SEARCH_MANUFACTURER
     await _show_manufacturer_keyboard(update.message)
     return SEARCH_MANUFACTURER
@@ -170,7 +193,7 @@ async def _show_manufacturer_keyboard(msg):
         rows.append(row)
     rows.append([InlineKeyboardButton("🚗 כל היצרנים", callback_data="mfr_all")])
     await msg.reply_text(
-        "🏭 שלב 2 – *בחר יצרן:*",
+        "🏭 שלב 1 – *בחר יצרן:*",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(rows),
     )
@@ -206,7 +229,7 @@ async def _show_model_keyboard(msg, manufacturer: str):
         )
     else:
         await msg.reply_text(
-            "🚘 שלב 3 – *דגם*\nכתוב שם הדגם או שלח /skip לכל הדגמים:",
+            "🚘 שלב 2 – *דגם*\nכתוב שם הדגם או שלח /skip לכל הדגמים:",
             parse_mode="Markdown",
         )
 
@@ -221,6 +244,52 @@ async def got_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         context.user_data["new_search"]["model"] = update.message.text.strip()
         msg = update.message
+    context.user_data["_state"] = SEARCH_SUBMODEL
+    await _show_submodel_keyboard(msg, context.user_data["new_search"].get("model", ""))
+    return SEARCH_SUBMODEL
+
+
+async def _show_submodel_keyboard(msg, model: str):
+    submodels = SUBMODELS_BY_MODEL.get(model, [])
+    if submodels:
+        rows = []
+        row = []
+        for s in submodels:
+            row.append(InlineKeyboardButton(s, callback_data=f"sub_{s}"))
+            if len(row) == 3:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
+        rows.append([InlineKeyboardButton("⏭ כל התת-דגמים", callback_data="sub_all")])
+        await msg.reply_text(
+            "🔖 שלב 3 – *בחר תת-דגם:*",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(rows),
+        )
+    else:
+        await msg.reply_text(
+            "🔖 שלב 3 – *תת-דגם*\nכתוב תת-דגם או שלח /skip לדלג:",
+            parse_mode="Markdown",
+        )
+
+
+async def got_submodel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        val = query.data.replace("sub_", "")
+        context.user_data["new_search"]["submodel"] = "" if val == "all" else val
+        msg = query.message
+    else:
+        context.user_data["new_search"]["submodel"] = update.message.text.strip()
+        msg = update.message
+
+    s = context.user_data["new_search"]
+    parts = [s.get("manufacturer", ""), s.get("model", ""), s.get("submodel", "")]
+    auto_name = " ".join(p for p in parts if p) or "חיפוש"
+    context.user_data["new_search"]["name"] = auto_name
+
     context.user_data["_state"] = SEARCH_PRICE_MIN
     await msg.reply_text(
         "💰 שלב 4 – *מחיר מינימלי* (₪)\nשלח /skip לדלג:",
@@ -297,19 +366,25 @@ async def got_km_max(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def skip_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current = context.user_data.get("_state", SEARCH_MANUFACTURER)
     next_state_map = {
-        SEARCH_MANUFACTURER: (SEARCH_MODEL,    "🚘 שלב 3/8 – *דגם*\nשלח /skip לכל הדגמים:"),
-        SEARCH_MODEL:        (SEARCH_PRICE_MIN, "💰 שלב 4/8 – *מחיר מינימלי* (₪)\nשלח /skip לדלג:"),
-        SEARCH_PRICE_MIN:    (SEARCH_PRICE_MAX, "💰 שלב 5/8 – *מחיר מקסימלי* (₪)\nשלח /skip לדלג:"),
-        SEARCH_PRICE_MAX:    (SEARCH_YEAR_MIN,  "📅 שלב 6/8 – *שנה מינימלית*\nשלח /skip לדלג:"),
-        SEARCH_YEAR_MIN:     (SEARCH_YEAR_MAX,  "📅 שלב 7/8 – *שנה מקסימלית*\nשלח /skip לדלג:"),
-        SEARCH_YEAR_MAX:     (SEARCH_KM_MAX,    "🛣 שלב 8/8 – *קילומטראז' מקסימלי*\nשלח /skip לדלג:"),
-        SEARCH_KM_MAX:       (None, None),
+        SEARCH_MODEL:     (SEARCH_SUBMODEL,  None),
+        SEARCH_SUBMODEL:  (SEARCH_PRICE_MIN, "💰 *מחיר מינימלי* (₪)\nשלח /skip לדלג:"),
+        SEARCH_PRICE_MIN: (SEARCH_PRICE_MAX, "💰 *מחיר מקסימלי* (₪)\nשלח /skip לדלג:"),
+        SEARCH_PRICE_MAX: (SEARCH_YEAR_MIN,  "📅 *שנה מינימלית*\nשלח /skip לדלג:"),
+        SEARCH_YEAR_MIN:  (SEARCH_YEAR_MAX,  "📅 *שנה מקסימלית*\nשלח /skip לדלג:"),
+        SEARCH_YEAR_MAX:  (SEARCH_KM_MAX,    "🛣 *קילומטראז' מקסימלי*\nשלח /skip לדלג:"),
+        SEARCH_KM_MAX:    (None, None),
     }
     nxt, msg = next_state_map.get(current, (None, None))
     if nxt is None:
         return await show_search_summary(update, context)
     context.user_data["_state"] = nxt
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    if nxt == SEARCH_SUBMODEL:
+        s = context.user_data["new_search"]
+        parts = [s.get("manufacturer", ""), s.get("model", ""), s.get("submodel", "")]
+        context.user_data["new_search"]["name"] = " ".join(p for p in parts if p) or "חיפוש"
+        await _show_submodel_keyboard(update.message, s.get("model", ""))
+    else:
+        await update.message.reply_text(msg, parse_mode="Markdown")
     return nxt
 
 
@@ -629,11 +704,11 @@ def main():
     app = Application.builder().token(token).build()
 
     conv = ConversationHandler(
-        entry_points=[CommandHandler("add_search", add_search_start)],
+        entry_points=[CommandHandler("add_search", add_search_start), CommandHandler("add", add_search_start)],
         states={
-            SEARCH_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_name)],
-            SEARCH_MANUFACTURER: [CallbackQueryHandler(got_manufacturer, pattern="^mfr_"), CommandHandler("skip", skip_step)],
+            SEARCH_MANUFACTURER: [CallbackQueryHandler(got_manufacturer, pattern="^mfr_")],
             SEARCH_MODEL: [CallbackQueryHandler(got_model, pattern="^mdl_"), MessageHandler(filters.TEXT & ~filters.COMMAND, got_model), CommandHandler("skip", skip_step)],
+            SEARCH_SUBMODEL: [CallbackQueryHandler(got_submodel, pattern="^sub_"), MessageHandler(filters.TEXT & ~filters.COMMAND, got_submodel), CommandHandler("skip", skip_step)],
             SEARCH_PRICE_MIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_price_min), CommandHandler("skip", skip_step)],
             SEARCH_PRICE_MAX: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_price_max), CommandHandler("skip", skip_step)],
             SEARCH_YEAR_MIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_year_min), CommandHandler("skip", skip_step)],
