@@ -138,12 +138,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         f"👋 שלום {user.first_name}!\n\n"
         "🚗 *בוט חיפוש רכבים ביד 2*\n\n"
-        f"🔑 ה-Chat ID שלך: `{chat_id}`\n"
-        "השתמש במספר זה באתר CarConnoisseur\n\n"
         "📋 *פקודות זמינות:*\n"
         "/add\\_search – הוסף חיפוש חדש\n"
         "/my\\_searches – הצג את החיפושים שלי\n"
-        "/check\\_now – בדוק עכשיו\n"
+        "/check\\_now – בדוק עכשיו אם יש מודעות חדשות\n"
+        "/show\\_current – הצג את כל המודעות הקיימות עכשיו\n"
+        "/clear\\_history – אפס היסטוריה ושלח הכל מחדש\n"
         "/my\\_id – הצג את ה-Chat ID שלך\n"
         "/help – עזרה\n"
     )
