@@ -483,18 +483,50 @@ async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total = 0
         for sid, s in searches.items():
             try:
-                new_listings = await scraper.fetch_new_listings(s, search_manager, user_id, sid)
-                for listing in new_listings:
+                all_listings = await scraper.fetch_listings(s)
+                seen = set(search_manager.get_seen_ids(user_id, sid))
+                new_listings = [l for l in all_listings if l["id"] not in seen]
+                if new_listings:
+                    search_manager.mark_seen(user_id, sid, [l["id"] for l in new_listings])
+                for listing in new_listings[:15]:
                     await send_listing(context.bot, int(user_id), listing, s["name"])
                     total += 1
+                if not new_listings:
+                    await update.message.reply_text(
+                        f"😴 *{s['name']}* – אין מודעות חדשות.\n"
+                        f"📊 סה\"כ {len(all_listings)} מודעות קיימות ביד2.\n"
+                        f"💡 שלח /show\\_current לראות את כל המודעות הנוכחיות.",
+                        parse_mode="Markdown"
+                    )
             except Exception as e:
                 logger.error(f"Error fetching listings for search {sid}: {e}", exc_info=True)
                 await update.message.reply_text(f"⚠️ שגיאה בחיפוש '{s.get('name', sid)}': {e}")
-        msg = f"✅ נמצאו {total} מודעות חדשות!" if total else "😴 אין מודעות חדשות."
-        await update.message.reply_text(msg)
+        if total:
+            await update.message.reply_text(f"✅ נמצאו {total} מודעות חדשות!")
     except Exception as e:
         logger.error(f"check_now error: {e}", exc_info=True)
         await update.message.reply_text(f"❌ שגיאה: {e}")
+
+
+async def show_current(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_chat.id)
+    searches = search_manager.get_searches(user_id)
+    if not searches:
+        await update.message.reply_text("📭 אין לך חיפושים שמורים.")
+        return
+    await update.message.reply_text("🔄 שולף מודעות קיימות מיד2...")
+    for sid, s in searches.items():
+        try:
+            listings = await scraper.fetch_listings(s)
+            if not listings:
+                await update.message.reply_text(f"📭 *{s['name']}* – לא נמצאו מודעות.", parse_mode="Markdown")
+                continue
+            search_manager.mark_seen(user_id, sid, [l["id"] for l in listings])
+            await update.message.reply_text(f"📋 *{s['name']}* – {len(listings)} מודעות:", parse_mode="Markdown")
+            for listing in listings[:15]:
+                await send_listing(context.bot, int(user_id), listing, s["name"])
+        except Exception as e:
+            await update.message.reply_text(f"⚠️ שגיאה: {e}")
 
 
 async def poll_all_searches(context: ContextTypes.DEFAULT_TYPE):
@@ -621,6 +653,7 @@ def main():
     app.add_handler(CommandHandler("debug_now", debug_now))
     app.add_handler(CommandHandler("logs", logs_cmd))
     app.add_handler(CommandHandler("status", status_cmd))
+    app.add_handler(CommandHandler("show_current", show_current))
     app.add_handler(conv)
     app.add_handler(CallbackQueryHandler(view_search, pattern="^view_"))
     app.add_handler(CallbackQueryHandler(delete_search, pattern="^del_"))
