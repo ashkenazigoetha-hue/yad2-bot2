@@ -467,7 +467,8 @@ async def logs_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         with open(log_path, "r", encoding="utf-8") as f:
             lines = f.readlines()
-        last_lines = "".join(lines[-50:])
+        filtered = [l for l in lines if "httpx" not in l]
+        last_lines = "".join(filtered[-60:])
         if len(last_lines) > 4000:
             last_lines = last_lines[-4000:]
         await update.message.reply_text(f"📋 *לוג אחרון:*\n```\n{last_lines}\n```", parse_mode="Markdown")
