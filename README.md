@@ -19,8 +19,8 @@
 
 ### 1. שכפל את הפרויקט
 ```bash
-git clone https://github.com/ashkenazigoetha-hue/yad2-bot.git
-cd yad2-bot
+git clone https://github.com/ashkenazigoetha-hue/yad2-bot2.git
+cd yad2-bot2
 ```
 
 ### 2. התקן תלויות
@@ -42,6 +42,20 @@ DATA_DIR=data
 ```bash
 python bot.py
 ```
+
+---
+
+## עדכון קוד קיים
+
+אם הבוט כבר רץ על המחשב שלך ואתה רוצה למשוך את הגרסה המתוקנת:
+
+```bash
+git remote set-url origin https://github.com/ashkenazigoetha-hue/yad2-bot2.git
+git pull
+python bot.py
+```
+
+> קובץ `.env` לא נמחק ב-`git pull` — הטוקן שלך נשמר.
 
 ---
 
