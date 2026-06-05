@@ -43,6 +43,52 @@ logger = logging.getLogger(__name__)
     SEARCH_YEAR_MAX, SEARCH_KM_MAX, SEARCH_CONFIRM,
 ) = range(9)
 
+MANUFACTURERS = [
+    "טויוטה", "הונדה", "מאזדה", "יונדאי", "קיה", "פולקסווגן",
+    "פורד", "סובארו", "ניסאן", "סוזוקי", "סיאט", "סקודה",
+    "רנו", "פיג'ו", "סיטרואן", "ב.מ.וו", "מרצדס", "אאודי",
+    "אופל", "פיאט", "וולוו", "מיצובישי", "שברולט", "מיני",
+    "ג'יפ", "לקסוס", "לנד רובר", "טסלה", "דאצ'יה", "אלפא רומיאו",
+    "פורשה", "אינפיניטי", "יגואר", "קאדילק",
+]
+
+MODELS_BY_MANUFACTURER = {
+    "טויוטה": ["קורולה", "קאמרי", "יאריס", "אוריס", "RAV4", "לנד קרוזר", "פריוס", "ח'יילנדר", "אברנסיס", "ורסו"],
+    "הונדה": ["סיוויק", "אקורד", "ג'אז", "CR-V", "HR-V", "פיילוט"],
+    "מאזדה": ["מאזדה 3", "מאזדה 6", "CX-5", "CX-3", "CX-30", "מאזדה 2"],
+    "יונדאי": ["i20", "i30", "i35", "טוסון", "סונטה", "אלנטרה", "ix35", "סנטה פה", "קונה"],
+    "קיה": ["ספורטז'", "ריו", "סיד", "פיקנטו", "סטוניק", "סורנטו", "ניירו"],
+    "פולקסווגן": ["גולף", "פאסאט", "פולו", "טיגואן", "ג'טה", "ארטאון", "טי-רוק"],
+    "פורד": ["פוקוס", "פיאסטה", "קוגה", "מונדיאו", "אקו-ספורט", "פיוז'ן"],
+    "סובארו": ["אימפרזה", "פורסטר", "אאוטבק", "XV", "לגאסי", "BRZ"],
+    "ניסאן": ["ג'וק", "X-Trail", "סנטרה", "קשקאי", "מיקרה", "לאף"],
+    "סוזוקי": ["סוויפט", "ויטארה", "ספלאש", "סלריו", "ג'ימני"],
+    "סיאט": ["איביזה", "לאון", "אטקה", "ארונה", "טרקו"],
+    "סקודה": ["אוקטביה", "פאביה", "סקאלה", "קודיאק", "קאמיק", "ספרשב"],
+    "רנו": ["קליאו", "מגאן", "קפצ'ור", "קולאוס", "זואי", "קנגו"],
+    "פיג'ו": ["208", "308", "3008", "2008", "508", "206", "207"],
+    "סיטרואן": ["C3", "C4", "C5", "C-קרוסר", "ברלינגו"],
+    "ב.מ.וו": ["סדרה 1", "סדרה 2", "סדרה 3", "סדרה 5", "סדרה 7", "X1", "X3", "X5", "X6"],
+    "מרצדס": ["A קלאס", "B קלאס", "C קלאס", "E קלאס", "S קלאס", "GLA", "GLC", "GLE", "CLA"],
+    "אאודי": ["A1", "A3", "A4", "A5", "A6", "Q3", "Q5", "Q7", "TT"],
+    "אופל": ["אסטרה", "קורסה", "אינסיגניה", "מוקה", "קרוסלנד"],
+    "פיאט": ["500", "פונטו", "טיפו", "בראבו", "פנדה"],
+    "וולוו": ["S60", "S90", "V40", "V60", "XC40", "XC60", "XC90"],
+    "מיצובישי": ["לנסר", "ASX", "אאוטלנדר", "אקליפס קרוס", "L200"],
+    "שברולט": ["קרוז", "מאליבו", "ספארק", "טרקס", "קפטיבה"],
+    "מיני": ["MINI", "קלאבמן", "קאנטרימן", "קאבריולט"],
+    "ג'יפ": ["רנגלר", "צ'רוקי", "גרנד צ'רוקי", "קומפאס", "ראנגלר"],
+    "לקסוס": ["IS", "ES", "GS", "LS", "RX", "NX", "UX"],
+    "לנד רובר": ["דיסקברי", "דיפנדר", "ריינג' רובר", "אוורק"],
+    "טסלה": ["מודל 3", "מודל S", "מודל X", "מודל Y"],
+    "דאצ'יה": ["סנדרו", "לוגן", "דאסטר", "לודג'י"],
+    "אלפא רומיאו": ["ג'וליאטה", "ג'וליה", "סטלביו", "156", "147"],
+    "פורשה": ["קאיין", "מקאן", "פאנמרה", "911", "בוקסטר"],
+    "אינפיניטי": ["Q30", "Q50", "QX30", "QX50", "QX70"],
+    "יגואר": ["XE", "XF", "XJ", "E-PACE", "F-PACE", "I-PACE"],
+    "קאדילק": ["CTS", "ATS", "SRX", "XT5", "Escalade"],
+}
+
 config = Config()
 search_manager = SearchManager(config.DATA_DIR)
 scraper = Yad2Scraper()
@@ -108,28 +154,76 @@ async def add_search_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def got_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["new_search"]["name"] = update.message.text.strip()
     context.user_data["_state"] = SEARCH_MANUFACTURER
-    await update.message.reply_text(
-        "🏭 שלב 2/8 – *יצרן*\n`toyota`, `honda`, `mazda`, `volkswagen`...\nשלח /skip לכל היצרנים:",
-        parse_mode="Markdown",
-    )
+    await _show_manufacturer_keyboard(update.message)
     return SEARCH_MANUFACTURER
 
 
-async def got_manufacturer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["new_search"]["manufacturer"] = update.message.text.strip()
-    context.user_data["_state"] = SEARCH_MODEL
-    await update.message.reply_text(
-        "🚘 שלב 3/8 – *דגם*\nשלח /skip לכל הדגמים:",
+async def _show_manufacturer_keyboard(msg):
+    rows = []
+    row = []
+    for i, m in enumerate(MANUFACTURERS):
+        row.append(InlineKeyboardButton(m, callback_data=f"mfr_{m}"))
+        if len(row) == 3:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton("🚗 כל היצרנים", callback_data="mfr_all")])
+    await msg.reply_text(
+        "🏭 שלב 2 – *בחר יצרן:*",
         parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(rows),
     )
+
+
+async def got_manufacturer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    val = query.data.replace("mfr_", "")
+    context.user_data["new_search"]["manufacturer"] = "" if val == "all" else val
+    context.user_data["_state"] = SEARCH_MODEL
+    await _show_model_keyboard(query.message, val)
     return SEARCH_MODEL
 
 
+async def _show_model_keyboard(msg, manufacturer: str):
+    models = MODELS_BY_MANUFACTURER.get(manufacturer, [])
+    if models:
+        rows = []
+        row = []
+        for i, m in enumerate(models):
+            row.append(InlineKeyboardButton(m, callback_data=f"mdl_{m}"))
+            if len(row) == 3:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
+        rows.append([InlineKeyboardButton("🚗 כל הדגמים", callback_data="mdl_all")])
+        await msg.reply_text(
+            "🚘 שלב 3 – *בחר דגם:*",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(rows),
+        )
+    else:
+        await msg.reply_text(
+            "🚘 שלב 3 – *דגם*\nכתוב שם הדגם או שלח /skip לכל הדגמים:",
+            parse_mode="Markdown",
+        )
+
+
 async def got_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["new_search"]["model"] = update.message.text.strip()
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        val = query.data.replace("mdl_", "")
+        context.user_data["new_search"]["model"] = "" if val == "all" else val
+        msg = query.message
+    else:
+        context.user_data["new_search"]["model"] = update.message.text.strip()
+        msg = update.message
     context.user_data["_state"] = SEARCH_PRICE_MIN
-    await update.message.reply_text(
-        "💰 שלב 4/8 – *מחיר מינימלי* (₪)\nשלח /skip לדלג:",
+    await msg.reply_text(
+        "💰 שלב 4 – *מחיר מינימלי* (₪)\nשלח /skip לדלג:",
         parse_mode="Markdown",
     )
     return SEARCH_PRICE_MIN
@@ -506,8 +600,8 @@ def main():
         entry_points=[CommandHandler("add_search", add_search_start)],
         states={
             SEARCH_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_name)],
-            SEARCH_MANUFACTURER: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_manufacturer), CommandHandler("skip", skip_step)],
-            SEARCH_MODEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_model), CommandHandler("skip", skip_step)],
+            SEARCH_MANUFACTURER: [CallbackQueryHandler(got_manufacturer, pattern="^mfr_"), CommandHandler("skip", skip_step)],
+            SEARCH_MODEL: [CallbackQueryHandler(got_model, pattern="^mdl_"), MessageHandler(filters.TEXT & ~filters.COMMAND, got_model), CommandHandler("skip", skip_step)],
             SEARCH_PRICE_MIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_price_min), CommandHandler("skip", skip_step)],
             SEARCH_PRICE_MAX: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_price_max), CommandHandler("skip", skip_step)],
             SEARCH_YEAR_MIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_year_min), CommandHandler("skip", skip_step)],
