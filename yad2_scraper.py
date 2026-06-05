@@ -7,7 +7,6 @@ import json
 import logging
 import os
 import re
-from datetime import datetime, timedelta
 from typing import Optional
 from urllib.parse import urlencode
 
@@ -79,11 +78,8 @@ class Yad2Scraper:
             return model
         return MODEL_MAP.get(model.lower().strip(), model)
 
-    def _build_params(self, search: dict, ignore_date_filter: bool = False) -> dict:
+    def _build_params(self, search: dict) -> dict:
         params = {}
-        if not ignore_date_filter:
-            week_ago = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
-            params['fromDate'] = week_ago
 
         manufacturer = search.get("manufacturer", "").lower().strip()
         if manufacturer:
@@ -98,18 +94,18 @@ class Yad2Scraper:
         if search.get("price_min"):
             params["price"] = search["price_min"]
         if search.get("price_max"):
-            params["priceMax"] = search["price_max"]
+            params["priceEnd"] = search["price_max"]
         if search.get("year_min"):
             params["year"] = search["year_min"]
         if search.get("year_max"):
-            params["yearMax"] = search["year_max"]
+            params["yearEnd"] = search["year_max"]
         if search.get("km_max"):
             params["km"] = search["km_max"]
 
         return params
 
-    async def fetch_listings(self, search: dict, ignore_date_filter: bool = False) -> list[dict]:
-        params = self._build_params(search, ignore_date_filter)
+    async def fetch_listings(self, search: dict) -> list[dict]:
+        params = self._build_params(search)
         url = f"{YAD2_SEARCH_URL}?{urlencode(params)}" if params else YAD2_SEARCH_URL
 
         try:
@@ -173,23 +169,48 @@ class Yad2Scraper:
     def _parse_item(self, item: dict) -> Optional[dict]:
         try:
             token = item.get("token", "")
-            order_id = item.get("orderId")
-            ad_id = str(order_id or token)
-            if not ad_id:
+            order_id = item.get("orderId") or item.get("id") or item.get("adId")
+            ad_id = str(order_id or token).strip()
+            if not ad_id or ad_id in ("None", "0", ""):
                 return None
 
             parts = []
             for field in ["manufacturer", "model", "subModel"]:
                 obj = item.get(field, {})
-                if isinstance(obj, dict) and obj.get("text"):
-                    parts.append(obj["text"])
-            title = " ".join(parts) if parts else "רכב"
+                if isinstance(obj, dict):
+                    text = obj.get("text") or obj.get("value") or obj.get("name", "")
+                    if text:
+                        parts.append(text)
+                elif isinstance(obj, str) and obj:
+                    parts.append(obj)
+            title = " ".join(parts) if parts else item.get("title", "רכב")
 
             price = item.get("price")
-            year = item.get("vehicleDates", {}).get("yearOfProduction")
-            km = item.get("km") or item.get("kilometers")
-            city = item.get("address", {}).get("area", {}).get("text", "")
+            if isinstance(price, dict):
+                price = price.get("value") or price.get("price")
 
+            year = (
+                item.get("vehicleDates", {}).get("yearOfProduction")
+                or item.get("year")
+                or item.get("yearOfProduction")
+            )
+
+            km = (
+                item.get("km")
+                or item.get("kilometers")
+                or item.get("mileage")
+            )
+
+            addr = item.get("address", {})
+            city = (
+                addr.get("city", {}).get("text", "")
+                or addr.get("area", {}).get("text", "")
+                or addr.get("cityText", "")
+                or (addr if isinstance(addr, str) else "")
+                or item.get("city", "")
+            )
+
+            link_id = token or order_id
             return {
                 "id": ad_id,
                 "title": title,
@@ -197,7 +218,7 @@ class Yad2Scraper:
                 "year": year,
                 "km": km,
                 "city": city,
-                "url": f"https://www.yad2.co.il/item/{token or order_id}",
+                "url": f"https://www.yad2.co.il/item/{link_id}",
             }
         except Exception as e:
             logger.debug(f"parse_item error: {e}")
@@ -209,12 +230,14 @@ class Yad2Scraper:
         seen_ids = set(search_manager.get_seen_ids(user_id, search_id))
         is_first_run = len(seen_ids) == 0
 
-        all_listings = await self.fetch_listings(search, ignore_date_filter=is_first_run)
+        all_listings = await self.fetch_listings(search)
         new_listings = [l for l in all_listings if l["id"] not in seen_ids]
 
         if is_first_run:
+            # Mark everything as seen so future runs only send truly new listings
             search_manager.mark_seen(user_id, search_id, [l["id"] for l in all_listings])
-            return new_listings[:15]
+            logger.info(f"First run: marked {len(all_listings)} listings as seen, sending nothing")
+            return []
 
         if new_listings:
             search_manager.mark_seen(user_id, search_id, [l["id"] for l in new_listings])
