@@ -462,6 +462,33 @@ async def stop_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🛑 כל {count} החיפושים נמחקו.")
 
 
+async def logs_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    log_path = "logs/bot.log"
+    try:
+        with open(log_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        last_lines = "".join(lines[-50:])
+        if len(last_lines) > 4000:
+            last_lines = last_lines[-4000:]
+        await update.message.reply_text(f"📋 *לוג אחרון:*\n```\n{last_lines}\n```", parse_mode="Markdown")
+    except FileNotFoundError:
+        await update.message.reply_text("❌ קובץ לוג לא נמצא.")
+    except Exception as e:
+        await update.message.reply_text(f"❌ שגיאה: {e}")
+
+
+async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    users = search_manager.get_all_users()
+    total = sum(len(search_manager.get_searches(u)) for u in users)
+    await update.message.reply_text(
+        f"✅ *הבוט פעיל*\n\n"
+        f"👥 משתמשים: {len(users)}\n"
+        f"🔍 סה\"כ חיפושים: {total}\n"
+        f"⏱ סריקה כל {config.POLL_INTERVAL_MINUTES} דקות",
+        parse_mode="Markdown"
+    )
+
+
 def main():
     token = config.TELEGRAM_TOKEN
     if not token:
@@ -497,6 +524,8 @@ def main():
     app.add_handler(CommandHandler("check_now", check_now))
     app.add_handler(CommandHandler("stop_all", stop_all))
     app.add_handler(CommandHandler("debug_now", debug_now))
+    app.add_handler(CommandHandler("logs", logs_cmd))
+    app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(conv)
     app.add_handler(CallbackQueryHandler(view_search, pattern="^view_"))
     app.add_handler(CallbackQueryHandler(delete_search, pattern="^del_"))
