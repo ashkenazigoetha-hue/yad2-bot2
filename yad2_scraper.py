@@ -170,21 +170,43 @@ class Yad2Scraper:
     async def fetch_listings(self, search: dict) -> list[dict]:
         try:
             params = self._build_params(search)
-            url = f"{YAD2_SEARCH_URL}?{urlencode(params)}" if params else YAD2_SEARCH_URL
-            results = await self._fetch_url(url)
-
-            # Client-side filter: exact model + sub_model match
             wanted_model = (search.get("model") or "").strip()
             wanted_sub = (search.get("sub_model") or "").strip()
+
+            all_results: list[dict] = []
+            # Fetch up to 4 pages to ensure we don't miss results on later pages
+            max_pages = 4 if (wanted_model or wanted_sub) else 1
+            for page in range(1, max_pages + 1):
+                p = dict(params)
+                if page > 1:
+                    p["page"] = page
+                url = f"{YAD2_SEARCH_URL}?{urlencode(p)}" if p else YAD2_SEARCH_URL
+                page_results = await self._fetch_url(url)
+                if not page_results:
+                    break
+                all_results.extend(page_results)
+                # Stop early if we already have plenty of filtered results
+                if page > 1 and len(all_results) > 200:
+                    break
+
+            # Deduplicate by id
+            seen: set[str] = set()
+            unique = []
+            for r in all_results:
+                if r["id"] not in seen:
+                    seen.add(r["id"])
+                    unique.append(r)
+
+            # Client-side filter by model / sub_model
             if wanted_model or wanted_sub:
-                before = len(results)
-                results = [r for r in results if self._matches_search(r, search)]
+                before = len(unique)
+                unique = [r for r in unique if self._matches_search(r, search)]
                 logger.info(
                     f"Model filter '{wanted_model}' / sub '{wanted_sub}': "
-                    f"{before} → {len(results)} listings"
+                    f"{before} → {len(unique)} listings (across {max_pages} pages)"
                 )
 
-            return results
+            return unique
         except Exception as e:
             logger.error(f"fetch_listings error: {e}", exc_info=True)
             raise
