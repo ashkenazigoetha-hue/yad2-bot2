@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import sys
+from datetime import datetime
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -347,7 +348,7 @@ async def _fetch_new(search: dict) -> list:
 
         # Filter to listings from the last 7 days, sort newest first
         fresh = [l for l in listings if scraper._is_recent(l.get("listing_date"))]
-        fresh.sort(key=lambda l: scraper._parse_listing_date(l.get("listing_date")) or __import__("datetime").datetime.min, reverse=True)
+        fresh.sort(key=lambda l: scraper._parse_listing_date(l.get("listing_date")) or datetime.min, reverse=True)
 
         # Mark ALL fetched IDs as seen (prevents old ones from ever being re-sent)
         if listings:
@@ -464,7 +465,10 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     profiles = await asyncio.to_thread(sb.get_all_linked_profiles)
-    total = sum(len(await asyncio.to_thread(sb.get_searches, p["telegram_chat_id"])) for p in profiles)
+    total = 0
+    for p in profiles:
+        searches = await asyncio.to_thread(sb.get_searches, p["telegram_chat_id"])
+        total += len(searches)
     await update.message.reply_text(
         f"✅ *הבוט פעיל*\n\n"
         f"👥 משתמשים מחוברים: {len(profiles)}\n"
@@ -475,21 +479,28 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    import httpx
-    from supabase_manager import SUPABASE_URL, _headers
     chat_id = str(update.effective_chat.id)
-    searches = sb.get_searches(chat_id)
-    for s in searches:
-        httpx.patch(
-            f"{SUPABASE_URL}/rest/v1/searches",
-            headers=_headers(),
-            params={"id": f"eq.{s['id']}"},
-            json={"seen_ids": []},
-            timeout=10,
-        )
+    searches = await asyncio.to_thread(sb.get_searches, chat_id)
+    if not searches:
+        await update.message.reply_text("אין חיפושים שמורים.")
+        return
+
+    def _do_clear():
+        from supabase_manager import SUPABASE_URL, _headers
+        import httpx
+        for s in searches:
+            httpx.patch(
+                f"{SUPABASE_URL}/rest/v1/searches",
+                headers=_headers(),
+                params={"id": f"eq.{s['id']}"},
+                json={"seen_ids": []},
+                timeout=10,
+            )
+
+    await asyncio.to_thread(_do_clear)
     await update.message.reply_text(
         f"🗑 היסטוריה אופסה ל-{len(searches)} חיפושים.\n"
-        "בבדיקה הבאה הבוט ישלח שוב את המודעות העדכניות.",
+        "בבדיקה הבאה הבוט ישלח את המודעות העדכניות.",
     )
 
 

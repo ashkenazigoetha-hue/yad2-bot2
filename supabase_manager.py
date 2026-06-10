@@ -1,6 +1,5 @@
 """
 SupabaseManager – reads/writes searches and profiles from Supabase.
-The bot uses this instead of SearchManager once a user links their email.
 """
 
 from __future__ import annotations
@@ -39,7 +38,6 @@ class SupabaseManager:
     # ── Profile / linking ─────────────────────────────────────────────────────
 
     def link_email(self, chat_id: str, email: str) -> bool:
-        """Find profile by email and save telegram_chat_id. Returns True if found."""
         rows = _get("profiles", {"email": f"eq.{email}", "select": "id,email"})
         if not rows:
             return False
@@ -53,20 +51,17 @@ class SupabaseManager:
         return rows[0] if rows else None
 
     def get_all_linked_profiles(self) -> list[dict]:
-        """All profiles that have a telegram_chat_id set."""
         return _get("profiles", {"telegram_chat_id": "not.is.null", "select": "id,telegram_chat_id"})
 
     # ── Searches ──────────────────────────────────────────────────────────────
 
     def get_searches(self, chat_id: str) -> list[dict]:
-        """Return list of search dicts for this telegram user."""
         profile = self.get_profile_by_chat(chat_id)
         if not profile:
             return []
         return _get("searches", {"user_id": f"eq.{profile['id']}", "select": "*"})
 
     def get_all_searches(self) -> list[tuple[str, dict]]:
-        """Returns [(chat_id, search), ...] for all linked users."""
         profiles = self.get_all_linked_profiles()
         result = []
         for p in profiles:
@@ -79,10 +74,23 @@ class SupabaseManager:
 
     def get_seen_ids(self, search_id: str) -> list[str]:
         rows = _get("searches", {"id": f"eq.{search_id}", "select": "seen_ids"})
-        return rows[0]["seen_ids"] if rows else []
+        if not rows:
+            return []
+        # seen_ids can be NULL in DB if the column was added after row creation
+        return rows[0]["seen_ids"] or []
 
     def mark_seen(self, search_id: str, new_ids: list[str]):
-        current = set(self.get_seen_ids(search_id))
-        current.update(new_ids)
-        trimmed = list(current)[-2000:]
+        if not new_ids:
+            return
+        current = self.get_seen_ids(search_id)  # always returns a list now
+        seen_set = set(current)
+        # Append only IDs not already tracked, preserving insertion order
+        merged = list(current)
+        for nid in new_ids:
+            if nid not in seen_set:
+                merged.append(nid)
+                seen_set.add(nid)
+        # Keep the most-recently-added 2000 (tail of ordered list)
+        trimmed = merged[-2000:]
         _patch("searches", {"id": f"eq.{search_id}"}, {"seen_ids": trimmed})
+        logger.debug(f"mark_seen {search_id}: {len(current)} → {len(trimmed)} ids")

@@ -229,27 +229,24 @@ class Yad2Scraper:
 
     def _matches_search(self, listing: dict, search: dict) -> bool:
         """Client-side model and sub_model match (substring, case-insensitive)."""
-        wanted_model = (search.get("model") or "").strip()
-        wanted_sub = (search.get("sub_model") or "").strip()
+        # str() guards against int values stored in Supabase
+        wanted_model = str(search.get("model") or "").strip()
+        wanted_sub = str(search.get("sub_model") or "").strip()
 
         if wanted_model:
-            # Numeric ID = yad2 already filtered server-side, trust it
+            # Numeric ID → yad2 already filtered server-side, trust it
             if not wanted_model.isdigit():
                 normalized = self._normalize_model(wanted_model)
-                listing_model = (listing.get("model_text") or "").strip()
+                listing_model = str(listing.get("model_text") or "").strip()
                 wl = wanted_model.lower()
                 nl = normalized.lower()
                 ll = listing_model.lower()
-                if (wl not in ll and ll not in wl and
-                        nl not in ll and ll not in nl):
+                if wl not in ll and ll not in wl and nl not in ll and ll not in nl:
                     return False
 
         if wanted_sub:
             if not wanted_sub.isdigit():
-                listing_trim = (listing.get("trim") or "").strip().lower()
-                # Split "Sportback 1.5" into tokens and match each one separately.
-                # Text tokens use synonym table (Yad2 writes "האצ'בק" not "Sportback").
-                # Numeric tokens like "1.5" are matched literally.
+                listing_trim = str(listing.get("trim") or "").strip().lower()
                 for token in wanted_sub.lower().split():
                     synonyms = SUBMODEL_SYNONYMS.get(token, [token])
                     if not any(syn in listing_trim for syn in synonyms):
@@ -539,6 +536,13 @@ class Yad2Scraper:
     def _parse_listing_date(self, date_str) -> Optional[datetime]:
         if not date_str:
             return None
+        # Unix timestamp (int or numeric string)
+        try:
+            ts = int(date_str)
+            if ts > 1_000_000_000:  # sanity check — must be after year 2001
+                return datetime.fromtimestamp(ts)
+        except (ValueError, TypeError, OSError):
+            pass
         s = str(date_str).strip()
         for fmt in [
             "%Y-%m-%dT%H:%M:%S.%fZ",
