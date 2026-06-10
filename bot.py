@@ -49,6 +49,11 @@ def esc(text: str) -> str:
     """Escape special characters for MarkdownV2."""
     return re.sub(r'([_*\[\]()~`>#+\-=|{}.!\\])', r'\\\1', str(text))
 
+
+def _safe(s) -> str:
+    """Strip Markdown-special chars from dynamic content (titles, cities, trims)."""
+    return str(s or "").replace("*", "").replace("_", "").replace("`", "").replace("[", "").replace("]", "")
+
 # context.user_data key: True = waiting for user to type their email
 WAITING_EMAIL = "waiting_for_email"
 
@@ -350,9 +355,9 @@ async def _fetch_new(search: dict) -> list:
         fresh = [l for l in listings if scraper._is_recent(l.get("listing_date"))]
         fresh.sort(key=lambda l: scraper._parse_listing_date(l.get("listing_date")) or datetime.min, reverse=True)
 
-        # Mark ALL fetched IDs as seen (prevents old ones from ever being re-sent)
+        # Mark ALL fetched IDs as seen — pass current `seen` list to avoid extra GET
         if listings:
-            await asyncio.to_thread(sb.mark_seen, sid, [l["id"] for l in listings])
+            await asyncio.to_thread(sb.mark_seen, sid, [l["id"] for l in listings], list(seen))
 
         if is_first_run:
             logger.info(f"First run {sid}: {len(listings)} total, {len(fresh)} recent → sending top 10")
@@ -384,16 +389,16 @@ async def send_listing(bot, chat_id: int, listing: dict, search_name: str):
     contact_name  = listing.get("contact_name") or ""
     photo_url   = listing.get("photo_url")
 
-    header = title
+    header = _safe(title)
     if trim:
-        header += f" | {trim}"
+        header += f" | {_safe(trim)}"
 
     engine_str = ""
     if engine_cc:
         liters = round(engine_cc / 1000, 1)
         engine_str = str(liters)
         if engine_type:
-            engine_str += f" {engine_type}"
+            engine_str += f" {_safe(engine_type)}"
         if turbo:
             engine_str += " טורבו"
         if horsepower:
@@ -403,22 +408,22 @@ async def send_listing(bot, chat_id: int, listing: dict, search_name: str):
         "🚗 *מודעה חדשה נמצאה!* 🚗",
         header,
         f"🔹 שנה: {year}",
-        f"🔹 יד: {hand_text}",
-        f"🔹 בעלות: {ownership}",
+        f"🔹 יד: {_safe(hand_text)}",
+        f"🔹 בעלות: {_safe(ownership)}",
         f"🔹 קילומטראז': {km:,} ק\"מ" if km else "🔹 קילומטראז': —",
     ]
     if engine_str:
         lines.append(f"🔹 נפח מנוע: {engine_str}")
     if test_date:
-        lines.append(f"🔹 טסט עד: {test_date}")
+        lines.append(f"🔹 טסט עד: {_safe(test_date)}")
     lines.append(f"💰 מחיר מבוקש: {price:,} ₪" if price else "💰 מחיר: לא צוין")
-    lines.append(f"📍 אזור מכירה: {city}")
+    lines.append(f"📍 אזור מכירה: {_safe(city)}")
     if description:
-        lines.append(f"✨ ציוד: {description}")
+        lines.append(f"✨ ציוד: {_safe(description)}")
     if contact_phone:
-        contact_line = f"📞 {contact_phone}"
+        contact_line = f"📞 {_safe(contact_phone)}"
         if contact_name:
-            contact_line += f" {contact_name}"
+            contact_line += f" {_safe(contact_name)}"
         lines.append(contact_line)
 
     text = "\n".join(l for l in lines if l is not None)
@@ -444,8 +449,13 @@ async def send_listing(bot, chat_id: int, listing: dict, search_name: str):
 
     try:
         await bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
-    except Exception as e:
-        logger.error(f"Failed to send listing {listing['id']} to {chat_id}: {e}")
+    except Exception:
+        # Fallback: strip all formatting in case Markdown parsing failed
+        plain = re.sub(r"[*_`\[\]]", "", text)
+        try:
+            await bot.send_message(chat_id, plain, reply_markup=markup)
+        except Exception as e:
+            logger.error(f"Failed to send listing {listing['id']} to {chat_id}: {e}")
 
 
 # ── Misc commands ─────────────────────────────────────────────────────────────

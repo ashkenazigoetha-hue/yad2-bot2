@@ -208,7 +208,14 @@ class Yad2Scraper:
             if model.isdigit():
                 params["model"] = int(model)
             else:
-                heb_mfr = MANUFACTURER_MAP.get(manufacturer.lower(), manufacturer) if manufacturer else manufacturer
+                # Resolve Hebrew manufacturer name for model table lookup
+                if manufacturer.isdigit():
+                    heb_mfr = next(
+                        (k for k, v in YAD2_MANUFACTURER_IDS.items() if v == int(manufacturer)),
+                        manufacturer,
+                    )
+                else:
+                    heb_mfr = MANUFACTURER_MAP.get(manufacturer.lower(), manufacturer)
                 model_id = YAD2_MODEL_IDS.get((heb_mfr, model.upper()))
                 if model_id:
                     params["model"] = model_id
@@ -280,10 +287,18 @@ class Yad2Scraper:
         return None
 
     async def enrich_with_km(self, listings: list[dict]) -> list[dict]:
-        """Fetch km for each listing concurrently and inject into dict."""
+        """Fetch km for each listing, max 3 concurrent to avoid rate-limiting."""
         import asyncio as _asyncio
+        if not listings:
+            return listings
+        sem = _asyncio.Semaphore(3)
+
+        async def _limited(token: str):
+            async with sem:
+                return await self._fetch_item_km(token)
+
         km_values = await _asyncio.gather(
-            *[self._fetch_item_km(l["id"]) for l in listings],
+            *[_limited(l["id"]) for l in listings],
             return_exceptions=True,
         )
         for listing, km in zip(listings, km_values):

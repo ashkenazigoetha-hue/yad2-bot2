@@ -79,18 +79,18 @@ class SupabaseManager:
         # seen_ids can be NULL in DB if the column was added after row creation
         return rows[0]["seen_ids"] or []
 
-    def mark_seen(self, search_id: str, new_ids: list[str]):
+    def mark_seen(self, search_id: str, new_ids: list[str], current: list[str] = None):
         if not new_ids:
             return
-        current = self.get_seen_ids(search_id)  # always returns a list now
+        # `current` can be passed in to avoid an extra GET round-trip
+        if current is None:
+            current = self.get_seen_ids(search_id)
         seen_set = set(current)
-        # Append only IDs not already tracked, preserving insertion order
         merged = list(current)
         for nid in new_ids:
             if nid not in seen_set:
                 merged.append(nid)
                 seen_set.add(nid)
-        # Keep the most-recently-added 2000 (tail of ordered list)
         trimmed = merged[-2000:]
         _patch("searches", {"id": f"eq.{search_id}"}, {"seen_ids": trimmed})
         logger.debug(f"mark_seen {search_id}: {len(current)} → {len(trimmed)} ids")
