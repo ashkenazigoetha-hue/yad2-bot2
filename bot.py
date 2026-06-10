@@ -319,24 +319,32 @@ async def poll_all_searches(context: ContextTypes.DEFAULT_TYPE):
 
 # ── Fetch helper (replaces scraper.fetch_new_listings) ────────────────────────
 
+_fetch_locks: dict[str, asyncio.Lock] = {}
+
+
 async def _fetch_new(search: dict) -> list:
     """Fetch listings not yet seen, update seen_ids in Supabase."""
     sid = search["id"]
-    seen = set(search.get("seen_ids") or [])
-    is_first_run = len(seen) == 0
+    # One lock per search — prevents /start and poll_all_searches running concurrently
+    if sid not in _fetch_locks:
+        _fetch_locks[sid] = asyncio.Lock()
+    async with _fetch_locks[sid]:
+        # Always read fresh seen_ids from Supabase to avoid stale cached dicts
+        fresh_seen = await asyncio.to_thread(sb.get_seen_ids, sid)
+        seen = set(fresh_seen or [])
+        is_first_run = len(seen) == 0
 
-    listings = await scraper.fetch_listings(search)
+        listings = await scraper.fetch_listings(search)
 
-    if is_first_run:
-        # Mark ALL as seen so future polls only send truly new ones
-        if listings:
-            await asyncio.to_thread(sb.mark_seen, sid, [l["id"] for l in listings])
-        return listings[:10]
+        if is_first_run:
+            if listings:
+                await asyncio.to_thread(sb.mark_seen, sid, [l["id"] for l in listings])
+            return listings[:10]
 
-    new = [l for l in listings if l["id"] not in seen]
-    if new:
-        await asyncio.to_thread(sb.mark_seen, sid, [l["id"] for l in new])
-    return new[:15]
+        new = [l for l in listings if l["id"] not in seen]
+        if new:
+            await asyncio.to_thread(sb.mark_seen, sid, [l["id"] for l in new])
+        return new[:15]
 
 
 # ── send_listing ──────────────────────────────────────────────────────────────
