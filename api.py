@@ -1,26 +1,35 @@
 """
-CarConnoisseur API – receives searches from the website and saves them
+CarConnoisseur API – minimal health/status server.
+Searches are managed via Supabase; this API is only used for monitoring.
 """
 
 import json
 import logging
 import os
+import sys
+import platform
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
 import threading
 
-from config import Config
-from search_manager import SearchManager
-
 logger = logging.getLogger(__name__)
-config = Config()
-search_manager = SearchManager(config.DATA_DIR)
+
+_bot = None
+_loop = None
+_scraper = None
+
+
+def set_bot(bot, loop, scraper):
+    global _bot, _loop, _scraper
+    _bot = bot
+    _loop = loop
+    _scraper = scraper
+    logger.info("API: bot/loop/scraper injected")
 
 
 class APIHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
-        logger.info(f"API: {format % args}")
+        pass  # suppress access logs
 
     def send_json(self, status: int, data: dict):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -28,132 +37,27 @@ class APIHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", len(body))
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
         self.wfile.write(body)
 
     def do_OPTIONS(self):
         self.send_response(200)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
 
     def do_GET(self):
-        parsed = urlparse(self.path)
-
-        # GET /searches?chat_id=123456
-        if parsed.path == "/searches":
-            params = parse_qs(parsed.query)
-            chat_id = params.get("chat_id", [None])[0]
-            if not chat_id:
-                self.send_json(400, {"error": "chat_id required"})
-                return
-            searches = search_manager.get_searches(chat_id)
-            result = []
-            for sid, s in searches.items():
-                result.append({
-                    "id": sid,
-                    "name": s.get("name", ""),
-                    "manufacturer": s.get("manufacturer", ""),
-                    "model": s.get("model", ""),
-                    "price_min": s.get("price_min"),
-                    "price_max": s.get("price_max"),
-                    "year_min": s.get("year_min"),
-                    "year_max": s.get("year_max"),
-                    "km_max": s.get("km_max"),
-                })
-            self.send_json(200, {"searches": result})
-            return
-
-        # GET /health
-        if parsed.path == "/health":
+        if self.path == "/health":
             self.send_json(200, {"status": "ok"})
-            return
-
-        # GET /status
-        if parsed.path == "/status":
-            import sys, platform
-            from pathlib import Path
-            users = search_manager.get_all_users()
-            total_searches = sum(len(search_manager.get_searches(u)) for u in users)
-            pw_cache = Path.home() / ".cache" / "ms-playwright"
-            if pw_cache.exists():
-                chromium_dirs = [d.name for d in pw_cache.iterdir() if d.name.startswith("chromium")]
-                pw_status = f"installed: {chromium_dirs}"
-            else:
-                pw_status = "NOT INSTALLED - no ~/.cache/ms-playwright"
-            import os
-            db_url = os.getenv("DATABASE_URL", "")
-            storage = "postgres" if db_url else "file"
+        elif self.path == "/status":
             self.send_json(200, {
                 "status": "ok",
+                "bot_connected": _bot is not None,
                 "python": sys.version,
                 "platform": platform.platform(),
-                "storage": storage,
-                "users": len(users),
-                "total_searches": total_searches,
-                "playwright_chromium": pw_status,
+                "storage": "supabase",
             })
-            return
-
-        self.send_json(404, {"error": "Not found"})
-
-    def do_POST(self):
-        parsed = urlparse(self.path)
-
-        # POST /searches – add a new search
-        if parsed.path == "/searches":
-            length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(length)
-            try:
-                data = json.loads(body)
-            except Exception:
-                self.send_json(400, {"error": "Invalid JSON"})
-                return
-
-            chat_id = str(data.get("chat_id", "")).strip()
-            name = str(data.get("name", "")).strip()
-
-            if not chat_id or not name:
-                self.send_json(400, {"error": "chat_id and name are required"})
-                return
-
-            search = {
-                "name": name,
-                "manufacturer": data.get("manufacturer", "").strip(),
-                "model": data.get("model", "").strip(),
-                "price_min": int(data["price_min"]) if data.get("price_min") else None,
-                "price_max": int(data["price_max"]) if data.get("price_max") else None,
-                "year_min": int(data["year_min"]) if data.get("year_min") else None,
-                "year_max": int(data["year_max"]) if data.get("year_max") else None,
-                "km_max": int(data["km_max"]) if data.get("km_max") else None,
-            }
-
-            sid = search_manager.add_search(chat_id, search)
-            logger.info(f"New search '{name}' added for chat_id {chat_id}")
-            self.send_json(201, {"id": sid, "message": "Search added successfully"})
-            return
-
-        self.send_json(404, {"error": "Not found"})
-
-    def do_DELETE(self):
-        parsed = urlparse(self.path)
-
-        # DELETE /searches/<search_id>?chat_id=123456
-        if parsed.path.startswith("/searches/"):
-            sid = parsed.path.split("/searches/")[1]
-            params = parse_qs(parsed.query)
-            chat_id = params.get("chat_id", [None])[0]
-            if not chat_id or not sid:
-                self.send_json(400, {"error": "chat_id and search id required"})
-                return
-            search_manager.delete_search(chat_id, sid)
-            self.send_json(200, {"message": "Search deleted"})
-            return
-
-        self.send_json(404, {"error": "Not found"})
+        else:
+            self.send_json(404, {"error": "Not found"})
 
 
 def run_api(port: int = 8080):
@@ -163,9 +67,6 @@ def run_api(port: int = 8080):
 
 
 def start_api_thread(port: int = 8080, sm=None):
-    global search_manager
-    if sm is not None:
-        search_manager = sm
     t = threading.Thread(target=run_api, args=(port,), daemon=True)
     t.start()
     return t
