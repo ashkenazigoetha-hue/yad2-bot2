@@ -1,28 +1,29 @@
 #!/usr/bin/env python3
 """
 Yad2 Car Search Telegram Bot
+Searches are created on the website; the bot links users by email and sends alerts.
 """
 
 import asyncio
+import io
 import logging
 import os
 import sys
 
-import aiohttp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
     CallbackQueryHandler,
-    ConversationHandler,
     MessageHandler,
     filters,
     ContextTypes,
 )
 
 from config import Config
-from search_manager import SearchManager
+from supabase_manager import SupabaseManager
 from yad2_scraper import Yad2Scraper
+import api
 from api import start_api_thread
 
 os.makedirs("logs", exist_ok=True)
@@ -37,420 +38,137 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-(
-    SEARCH_NAME, SEARCH_MANUFACTURER, SEARCH_MODEL, SEARCH_SUBMODEL,
-    SEARCH_PRICE_MIN, SEARCH_PRICE_MAX, SEARCH_YEAR_MIN,
-    SEARCH_YEAR_MAX, SEARCH_KM_MAX, SEARCH_CONFIRM,
-) = range(10)
-
-MANUFACTURERS = [
-    "טויוטה", "הונדה", "מאזדה", "יונדאי", "קיה", "פולקסווגן",
-    "פורד", "סובארו", "ניסאן", "סוזוקי", "סיאט", "סקודה",
-    "רנו", "פיג'ו", "סיטרואן", "ב.מ.וו", "מרצדס", "אאודי",
-    "אופל", "פיאט", "וולוו", "מיצובישי", "שברולט", "מיני",
-    "ג'יפ", "לקסוס", "לנד רובר", "טסלה", "דאצ'יה", "אלפא רומיאו",
-    "פורשה", "אינפיניטי", "יגואר", "קאדילק",
-]
-
-MODELS_BY_MANUFACTURER = {
-    "טויוטה": ["קורולה", "קאמרי", "יאריס", "אוריס", "RAV4", "לנד קרוזר", "פריוס", "ח'יילנדר", "אברנסיס", "ורסו"],
-    "הונדה": ["סיוויק", "אקורד", "ג'אז", "CR-V", "HR-V", "פיילוט"],
-    "מאזדה": ["מאזדה 3", "מאזדה 6", "CX-5", "CX-3", "CX-30", "מאזדה 2"],
-    "יונדאי": ["i20", "i30", "i35", "טוסון", "סונטה", "אלנטרה", "ix35", "סנטה פה", "קונה"],
-    "קיה": ["ספורטז'", "ריו", "סיד", "פיקנטו", "סטוניק", "סורנטו", "ניירו"],
-    "פולקסווגן": ["גולף", "פאסאט", "פולו", "טיגואן", "ג'טה", "ארטאון", "טי-רוק"],
-    "פורד": ["פוקוס", "פיאסטה", "קוגה", "מונדיאו", "אקו-ספורט", "פיוז'ן"],
-    "סובארו": ["אימפרזה", "פורסטר", "אאוטבק", "XV", "לגאסי", "BRZ"],
-    "ניסאן": ["ג'וק", "X-Trail", "סנטרה", "קשקאי", "מיקרה", "לאף"],
-    "סוזוקי": ["סוויפט", "ויטארה", "ספלאש", "סלריו", "ג'ימני"],
-    "סיאט": ["איביזה", "לאון", "אטקה", "ארונה", "טרקו"],
-    "סקודה": ["אוקטביה", "פאביה", "סקאלה", "קודיאק", "קאמיק", "ספרשב"],
-    "רנו": ["קליאו", "מגאן", "קפצ'ור", "קולאוס", "זואי", "קנגו"],
-    "פיג'ו": ["208", "308", "3008", "2008", "508", "206", "207"],
-    "סיטרואן": ["C3", "C4", "C5", "C-קרוסר", "ברלינגו"],
-    "ב.מ.וו": ["סדרה 1", "סדרה 2", "סדרה 3", "סדרה 5", "סדרה 7", "X1", "X3", "X5", "X6"],
-    "מרצדס": ["A קלאס", "B קלאס", "C קלאס", "E קלאס", "S קלאס", "GLA", "GLC", "GLE", "CLA"],
-    "אאודי": ["A1", "A3", "A4", "A5", "A6", "Q3", "Q5", "Q7", "TT"],
-    "אופל": ["אסטרה", "קורסה", "אינסיגניה", "מוקה", "קרוסלנד"],
-    "פיאט": ["500", "פונטו", "טיפו", "בראבו", "פנדה"],
-    "וולוו": ["S60", "S90", "V40", "V60", "XC40", "XC60", "XC90"],
-    "מיצובישי": ["לנסר", "ASX", "אאוטלנדר", "אקליפס קרוס", "L200"],
-    "שברולט": ["קרוז", "מאליבו", "ספארק", "טרקס", "קפטיבה"],
-    "מיני": ["MINI", "קלאבמן", "קאנטרימן", "קאבריולט"],
-    "ג'יפ": ["רנגלר", "צ'רוקי", "גרנד צ'רוקי", "קומפאס", "ראנגלר"],
-    "לקסוס": ["IS", "ES", "GS", "LS", "RX", "NX", "UX"],
-    "לנד רובר": ["דיסקברי", "דיפנדר", "ריינג' רובר", "אוורק"],
-    "טסלה": ["מודל 3", "מודל S", "מודל X", "מודל Y"],
-    "דאצ'יה": ["סנדרו", "לוגן", "דאסטר", "לודג'י"],
-    "אלפא רומיאו": ["ג'וליאטה", "ג'וליה", "סטלביו", "156", "147"],
-    "פורשה": ["קאיין", "מקאן", "פאנמרה", "911", "בוקסטר"],
-    "אינפיניטי": ["Q30", "Q50", "QX30", "QX50", "QX70"],
-    "יגואר": ["XE", "XF", "XJ", "E-PACE", "F-PACE", "I-PACE"],
-    "קאדילק": ["CTS", "ATS", "SRX", "XT5", "Escalade"],
-}
-
-SUBMODELS_BY_MODEL = {
-    "קורולה": ["E120", "E150", "E160", "E170", "E210", "Cross"],
-    "קאמרי": ["V50", "V70", "V40"],
-    "יאריס": ["XP10", "XP90", "XP130", "XP150", "XP210"],
-    "RAV4": ["XA10", "XA20", "XA30", "XA40", "XA50"],
-    "פריוס": ["XW10", "XW20", "XW30", "XW50"],
-    "סיוויק": ["EJ", "EM", "EP", "FD", "FB", "FC", "FL"],
-    "גולף": ["Golf 4", "Golf 5", "Golf 6", "Golf 7", "Golf 8"],
-    "פאסאט": ["B5", "B6", "B7", "B8"],
-    "פולו": ["6N", "9N", "6R", "AW"],
-    "טיגואן": ["5N", "AD", "BW"],
-    "מאזדה 3": ["BK", "BL", "BM", "BP"],
-    "מאזדה 6": ["GG", "GH", "GJ", "GL"],
-    "CX-5": ["KE", "KF"],
-    "i30": ["FD", "GD", "PD", "CN7"],
-    "טוסון": ["JM", "LM", "TL", "NX4"],
-    "סונטה": ["NF", "YF", "LF", "DN8"],
-    "אלנטרה": ["HD", "MD", "AD", "CN7"],
-    "ספורטז'": ["SL", "QL", "NQ5"],
-    "סדרה 3": ["E46", "E90", "F30", "G20"],
-    "סדרה 5": ["E60", "F10", "G30"],
-    "X3": ["E83", "F25", "G01"],
-    "X5": ["E53", "E70", "F15", "G05"],
-    "C קלאס": ["W203", "W204", "W205", "W206"],
-    "E קלאס": ["W210", "W211", "W212", "W213"],
-    "A קלאס": ["W168", "W169", "W176", "W177"],
-    "A4": ["B6", "B7", "B8", "B9"],
-    "A3": ["8L", "8P", "8V", "8Y"],
-    "Q5": ["8R", "FY"],
-    "אוקטביה": ["1U", "1Z", "5E", "NX"],
-    "פאביה": ["6Y", "5J", "NJ"],
-}
-
 config = Config()
-search_manager = SearchManager(config.DATA_DIR)
+sb = SupabaseManager()
 scraper = Yad2Scraper()
 
+# context.user_data key: True = waiting for user to type their email
+WAITING_EMAIL = "waiting_for_email"
 
-def get_user_id(update: Update) -> str:
-    """Always use telegram chat_id as user identifier."""
-    return str(update.effective_chat.id)
 
+# ── /start ────────────────────────────────────────────────────────────────────
+
+SITE_URL = "https://carconnoisseur-web.vercel.app"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    chat_id = update.effective_chat.id
-    text = (
-        f"👋 שלום {user.first_name}!\n\n"
-        "🚗 *בוט חיפוש רכבים ביד 2*\n\n"
-        "📋 *פקודות זמינות:*\n"
-        "/add\\_search – הוסף חיפוש חדש\n"
-        "/my\\_searches – הצג את החיפושים שלי\n"
-        "/check\\_now – בדוק עכשיו אם יש מודעות חדשות\n"
-        "/show\\_current – הצג את כל המודעות הקיימות עכשיו\n"
-        "/clear\\_history – אפס היסטוריה ושלח הכל מחדש\n"
-        "/my\\_id – הצג את ה-Chat ID שלך\n"
-        "/help – עזרה\n"
-    )
-    await update.message.reply_text(text, parse_mode="Markdown")
+    chat_id = str(update.effective_chat.id)
+    profile = sb.get_profile_by_chat(chat_id)
 
-
-async def my_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    await update.message.reply_text(
-        f"🔑 ה-Chat ID שלך הוא:\n\n`{chat_id}`\n\nהשתמש במספר זה באתר CarConnoisseur",
-        parse_mode="Markdown"
-    )
-
-
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    text = (
-        "🆘 *עזרה*\n\n"
-        f"🔑 ה-Chat ID שלך: `{chat_id}`\n\n"
-        "*/add\\_search* – הגדר חיפוש חדש\n"
-        "*/my\\_searches* – ראה ונהל חיפושים\n"
-        "*/check\\_now* – בדיקה ידנית\n"
-        "*/my\\_id* – הצג את ה-Chat ID שלך\n"
-        "*/stop\\_all* – מחק הכל\n\n"
-        f"⏱ בודק כל *{config.POLL_INTERVAL_MINUTES}* דקות.\n"
-        "💡 בכל שלב אפשר /skip לדלג."
-    )
-    await update.message.reply_text(text, parse_mode="Markdown")
-
-
-async def add_search_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["new_search"] = {}
-    context.user_data["_state"] = SEARCH_MANUFACTURER
-    await _show_manufacturer_keyboard(update.message)
-    return SEARCH_MANUFACTURER
-
-
-async def _show_manufacturer_keyboard(msg):
-    rows = []
-    row = []
-    for i, m in enumerate(MANUFACTURERS):
-        row.append(InlineKeyboardButton(m, callback_data=f"mfr_{m}"))
-        if len(row) == 3:
-            rows.append(row)
-            row = []
-    if row:
-        rows.append(row)
-    rows.append([InlineKeyboardButton("🚗 כל היצרנים", callback_data="mfr_all")])
-    await msg.reply_text(
-        "🏭 שלב 1 – *בחר יצרן:*",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(rows),
-    )
-
-
-async def got_manufacturer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    val = query.data.replace("mfr_", "")
-    context.user_data["new_search"]["manufacturer"] = "" if val == "all" else val
-    context.user_data["_state"] = SEARCH_MODEL
-    await _show_model_keyboard(query.message, val)
-    return SEARCH_MODEL
-
-
-async def _show_model_keyboard(msg, manufacturer: str):
-    models = MODELS_BY_MANUFACTURER.get(manufacturer, [])
-    if models:
-        rows = []
-        row = []
-        for i, m in enumerate(models):
-            row.append(InlineKeyboardButton(m, callback_data=f"mdl_{m}"))
-            if len(row) == 3:
-                rows.append(row)
-                row = []
-        if row:
-            rows.append(row)
-        rows.append([InlineKeyboardButton("🚗 כל הדגמים", callback_data="mdl_all")])
-        await msg.reply_text(
-            "🚘 שלב 3 – *בחר דגם:*",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(rows),
-        )
-    else:
-        await msg.reply_text(
-            "🚘 שלב 2 – *דגם*\nכתוב שם הדגם או שלח /skip לכל הדגמים:",
-            parse_mode="Markdown",
-        )
-
-
-async def got_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.callback_query:
-        query = update.callback_query
-        await query.answer()
-        val = query.data.replace("mdl_", "")
-        context.user_data["new_search"]["model"] = "" if val == "all" else val
-        msg = query.message
-    else:
-        context.user_data["new_search"]["model"] = update.message.text.strip()
-        msg = update.message
-    context.user_data["_state"] = SEARCH_SUBMODEL
-    await _show_submodel_keyboard(msg, context.user_data["new_search"].get("model", ""))
-    return SEARCH_SUBMODEL
-
-
-async def _show_submodel_keyboard(msg, model: str):
-    submodels = SUBMODELS_BY_MODEL.get(model, [])
-    if submodels:
-        rows = []
-        row = []
-        for s in submodels:
-            row.append(InlineKeyboardButton(s, callback_data=f"sub_{s}"))
-            if len(row) == 3:
-                rows.append(row)
-                row = []
-        if row:
-            rows.append(row)
-        rows.append([InlineKeyboardButton("⏭ כל התת-דגמים", callback_data="sub_all")])
-        await msg.reply_text(
-            "🔖 שלב 3 – *בחר תת-דגם:*",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(rows),
-        )
-    else:
-        await msg.reply_text(
-            "🔖 שלב 3 – *תת-דגם*\nכתוב תת-דגם או שלח /skip לדלג:",
-            parse_mode="Markdown",
-        )
-
-
-async def got_submodel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.callback_query:
-        query = update.callback_query
-        await query.answer()
-        val = query.data.replace("sub_", "")
-        context.user_data["new_search"]["submodel"] = "" if val == "all" else val
-        msg = query.message
-    else:
-        context.user_data["new_search"]["submodel"] = update.message.text.strip()
-        msg = update.message
-
-    s = context.user_data["new_search"]
-    parts = [s.get("manufacturer", ""), s.get("model", ""), s.get("submodel", "")]
-    auto_name = " ".join(p for p in parts if p) or "חיפוש"
-    context.user_data["new_search"]["name"] = auto_name
-
-    context.user_data["_state"] = SEARCH_PRICE_MIN
-    await msg.reply_text(
-        "💰 שלב 4 – *מחיר מינימלי* (₪)\nשלח /skip לדלג:",
-        parse_mode="Markdown",
-    )
-    return SEARCH_PRICE_MIN
-
-
-async def got_price_min(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    val = update.message.text.strip()
-    if not val.isdigit():
-        await update.message.reply_text("⚠️ מספר בלבד (או /skip):")
-        return SEARCH_PRICE_MIN
-    context.user_data["new_search"]["price_min"] = int(val)
-    context.user_data["_state"] = SEARCH_PRICE_MAX
-    await update.message.reply_text(
-        "💰 שלב 5/8 – *מחיר מקסימלי* (₪)\nשלח /skip לדלג:",
-        parse_mode="Markdown",
-    )
-    return SEARCH_PRICE_MAX
-
-
-async def got_price_max(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    val = update.message.text.strip()
-    if not val.isdigit():
-        await update.message.reply_text("⚠️ מספר בלבד (או /skip):")
-        return SEARCH_PRICE_MAX
-    context.user_data["new_search"]["price_max"] = int(val)
-    context.user_data["_state"] = SEARCH_YEAR_MIN
-    await update.message.reply_text(
-        "📅 שלב 6/8 – *שנה מינימלית*\nשלח /skip לדלג:",
-        parse_mode="Markdown",
-    )
-    return SEARCH_YEAR_MIN
-
-
-async def got_year_min(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    val = update.message.text.strip()
-    if not val.isdigit() or not (1990 <= int(val) <= 2026):
-        await update.message.reply_text("⚠️ שנה תקינה (1990-2026) או /skip:")
-        return SEARCH_YEAR_MIN
-    context.user_data["new_search"]["year_min"] = int(val)
-    context.user_data["_state"] = SEARCH_YEAR_MAX
-    await update.message.reply_text(
-        "📅 שלב 7/8 – *שנה מקסימלית*\nשלח /skip לדלג:",
-        parse_mode="Markdown",
-    )
-    return SEARCH_YEAR_MAX
-
-
-async def got_year_max(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    val = update.message.text.strip()
-    if not val.isdigit() or not (1990 <= int(val) <= 2026):
-        await update.message.reply_text("⚠️ שנה תקינה (1990-2026) או /skip:")
-        return SEARCH_YEAR_MAX
-    context.user_data["new_search"]["year_max"] = int(val)
-    context.user_data["_state"] = SEARCH_KM_MAX
-    await update.message.reply_text(
-        "🛣 שלב 8/8 – *קילומטראז' מקסימלי*\nשלח /skip לדלג:",
-        parse_mode="Markdown",
-    )
-    return SEARCH_KM_MAX
-
-
-async def got_km_max(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    val = update.message.text.strip()
-    if not val.isdigit():
-        await update.message.reply_text("⚠️ מספר בלבד (או /skip):")
-        return SEARCH_KM_MAX
-    context.user_data["new_search"]["km_max"] = int(val)
-    return await show_search_summary(update, context)
-
-
-async def skip_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    current = context.user_data.get("_state", SEARCH_MANUFACTURER)
-    next_state_map = {
-        SEARCH_MODEL:     (SEARCH_SUBMODEL,  None),
-        SEARCH_SUBMODEL:  (SEARCH_PRICE_MIN, "💰 *מחיר מינימלי* (₪)\nשלח /skip לדלג:"),
-        SEARCH_PRICE_MIN: (SEARCH_PRICE_MAX, "💰 *מחיר מקסימלי* (₪)\nשלח /skip לדלג:"),
-        SEARCH_PRICE_MAX: (SEARCH_YEAR_MIN,  "📅 *שנה מינימלית*\nשלח /skip לדלג:"),
-        SEARCH_YEAR_MIN:  (SEARCH_YEAR_MAX,  "📅 *שנה מקסימלית*\nשלח /skip לדלג:"),
-        SEARCH_YEAR_MAX:  (SEARCH_KM_MAX,    "🛣 *קילומטראז' מקסימלי*\nשלח /skip לדלג:"),
-        SEARCH_KM_MAX:    (None, None),
-    }
-    nxt, msg = next_state_map.get(current, (None, None))
-    if nxt is None:
-        return await show_search_summary(update, context)
-    context.user_data["_state"] = nxt
-    if nxt == SEARCH_SUBMODEL:
-        s = context.user_data["new_search"]
-        parts = [s.get("manufacturer", ""), s.get("model", ""), s.get("submodel", "")]
-        context.user_data["new_search"]["name"] = " ".join(p for p in parts if p) or "חיפוש"
-        await _show_submodel_keyboard(update.message, s.get("model", ""))
-    else:
-        await update.message.reply_text(msg, parse_mode="Markdown")
-    return nxt
-
-
-async def show_search_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    s = context.user_data["new_search"]
-    lines = ["✅ *סיכום החיפוש:*\n", f"📌 שם: *{s.get('name', '—')}*"]
-    lines.append(f"🏭 יצרן: {s.get('manufacturer', 'כל היצרנים') or 'כל היצרנים'}")
-    lines.append(f"🚘 דגם: {s.get('model', 'כל הדגמים') or 'כל הדגמים'}")
-    if s.get("price_min") or s.get("price_max"):
-        mn = f"₪{s['price_min']:,}" if s.get("price_min") else "ללא"
-        mx = f"₪{s['price_max']:,}" if s.get("price_max") else "ללא"
-        lines.append(f"💰 מחיר: {mn} – {mx}")
-    if s.get("year_min") or s.get("year_max"):
-        lines.append(f"📅 שנה: {s.get('year_min','—')} – {s.get('year_max','—')}")
-    if s.get("km_max"):
-        lines.append(f"🛣 ק\"מ מקס': {s['km_max']:,}")
-    keyboard = [[
-        InlineKeyboardButton("✅ שמור", callback_data="save_search"),
-        InlineKeyboardButton("❌ בטל", callback_data="cancel_search"),
-    ]]
-    await update.message.reply_text(
-        "\n".join(lines), parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
-    return SEARCH_CONFIRM
-
-
-async def confirm_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    if query.data == "save_search":
-        user_id = str(query.message.chat_id)
-        search = context.user_data["new_search"]
-        search_manager.add_search(user_id, search)
-        await query.edit_message_text(
-            f"✅ החיפוש *{search['name']}* נשמר!\n\n"
-            f"🔑 Chat ID שלך: `{user_id}`\n"
-            "השתמש במספר זה באתר CarConnoisseur 🔔",
-            parse_mode="Markdown",
-        )
-    else:
-        await query.edit_message_text("❌ החיפוש בוטל.")
-    context.user_data.clear()
-    return ConversationHandler.END
-
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
-    await update.message.reply_text("❌ הפעולה בוטלה.")
-    return ConversationHandler.END
-
-
-async def my_searches(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_chat.id)
-    searches = search_manager.get_searches(user_id)
-    if not searches:
+    if profile:
+        searches = sb.get_searches(chat_id)
+        count = len(searches)
+        count_str = f"{count} חיפושים פעילים" if count != 1 else "חיפוש פעיל אחד"
         await update.message.reply_text(
-            f"📭 אין לך חיפושים שמורים.\n\n"
-            f"🔑 Chat ID שלך: `{user_id}`\n"
-            "הוסף חיפוש דרך האתר או /add\\_search",
-            parse_mode="Markdown"
+            f"👋 ברוך השב, {user.first_name}\\!\n\n"
+            f"✅ החשבון שלך מחובר \\({profile['email']}\\)\n"
+            f"🔍 יש לך {count_str}\n\n"
+            f"🌐 לניהול חיפושים: {SITE_URL}\n\n"
+            "━━━━━━━━━━━━━━━\n"
+            "📋 /my\\_searches – ראה חיפושים פעילים\n"
+            "🔄 /check\\_now – בדוק מודעות עכשיו\n"
+            "🗑 /clear\\_history – שלח שוב מודעות ישנות\n"
+            "📊 /status – סטטוס הבוט",
+            parse_mode="MarkdownV2",
+        )
+    else:
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🌐 פתח את האתר", url=SITE_URL)
+        ]])
+        await update.message.reply_text(
+            f"👋 שלום {user.first_name}\\, ברוך הבא ל\\-*CarConnoisseur*\\!\n\n"
+            "🚗 *מה זה?*\n"
+            "בוט שסורק את יד2 כל 15 דקות ושולח לך התראה ישירות לטלגרם כשמודעת רכב חדשה תואמת לחיפוש שלך\\.\n\n"
+            "━━━━━━━━━━━━━━━\n"
+            "*איך מתחילים?*\n\n"
+            "1️⃣ היכנס לאתר וצור חשבון חינם\n"
+            "2️⃣ הגדר את החיפושים שלך\n"
+            "3️⃣ חזור לכאן ושלח לי את כתובת המייל שלך לחיבור החשבון\n\n"
+            f"👇 לחץ כדי לפתוח את האתר:",
+            parse_mode="MarkdownV2",
+            reply_markup=keyboard,
+        )
+        context.user_data[WAITING_EMAIL] = True
+        await update.message.reply_text(
+            "📧 *שלח לי את המייל שלך* כדי לחבר את החשבון:",
+            parse_mode="Markdown",
+        )
+
+
+# ── Handle email input ────────────────────────────────────────────────────────
+
+async def handle_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get(WAITING_EMAIL):
+        return  # not waiting for email — ignore
+
+    email = update.message.text.strip().lower()
+    chat_id = str(update.effective_chat.id)
+
+    if "@" not in email or "." not in email:
+        await update.message.reply_text(
+            "❌ זה לא נראה כמו כתובת מייל תקינה. נסה שוב:"
         )
         return
+
+    await update.message.reply_text("🔄 מחפש את החשבון...")
+
+    found = sb.link_email(chat_id, email)
+    context.user_data[WAITING_EMAIL] = False
+
+    if not found:
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🌐 הרשם לאתר", url=SITE_URL)
+        ]])
+        await update.message.reply_text(
+            f"❌ לא נמצא חשבון עם המייל *{email}*\n\n"
+            "ייתכן שעדיין לא נרשמת לאתר, או שהמייל שגוי\\.\n\n"
+            "👇 הירשם באתר ואז חזור ושלח שוב את המייל:",
+            parse_mode="MarkdownV2",
+            reply_markup=keyboard,
+        )
+        return
+
+    searches = sb.get_searches(chat_id)
+    count = len(searches)
+    count_str = f"{count} חיפושים" if count != 1 else "חיפוש אחד"
+    await update.message.reply_text(
+        "🎉 *החשבון חובר בהצלחה\\!*\n\n"
+        f"📧 {email}\n"
+        f"🔍 נמצאו {count_str} פעילים\n\n"
+        "מעכשיו תקבל התראה ישירות לכאן בכל פעם שמודעה חדשה תואמת לחיפוש שלך\\.\n\n"
+        "━━━━━━━━━━━━━━━\n"
+        "לניהול חיפושים נוספים — היכנס לאתר:\n"
+        f"{SITE_URL}",
+        parse_mode="MarkdownV2",
+    )
+
+
+# ── /my_searches ──────────────────────────────────────────────────────────────
+
+async def my_searches(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = str(update.effective_chat.id)
+    profile = sb.get_profile_by_chat(chat_id)
+
+    if not profile:
+        context.user_data[WAITING_EMAIL] = True
+        await update.message.reply_text(
+            "⚠️ חשבונך אינו מחובר עדיין.\n\nשלח לי את כתובת המייל שלך:"
+        )
+        return
+
+    searches = sb.get_searches(chat_id)
+    if not searches:
+        await update.message.reply_text(
+            "📭 אין לך חיפושים שמורים.\n\n"
+            "כנס לאתר carconnoisseur-web.vercel.app להוספת חיפוש 🚗"
+        )
+        return
+
     keyboard = []
-    for sid, s in searches.items():
-        keyboard.append([InlineKeyboardButton(f"🔍 {s['name']}", callback_data=f"view_{sid}")])
+    for s in searches:
+        keyboard.append([InlineKeyboardButton(f"🔍 {s['name']}", callback_data=f"view_{s['id']}")])
     await update.message.reply_text(
         f"📋 *החיפושים שלך* ({len(searches)}):",
         parse_mode="Markdown",
@@ -458,32 +176,36 @@ async def my_searches(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# ── view / check callbacks ────────────────────────────────────────────────────
+
 async def view_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    user_id = str(query.message.chat_id)
+    chat_id = str(query.message.chat_id)
     sid = query.data.replace("view_", "")
-    searches = search_manager.get_searches(user_id)
-    s = searches.get(sid)
+
+    searches = sb.get_searches(chat_id)
+    s = next((x for x in searches if x["id"] == sid), None)
     if not s:
         await query.edit_message_text("❌ החיפוש לא נמצא.")
         return
+
     lines = [f"🔍 *{s['name']}*\n"]
-    lines.append(f"🏭 יצרן: {s.get('manufacturer', 'כל היצרנים') or 'כל היצרנים'}")
-    lines.append(f"🚘 דגם: {s.get('model', 'כל הדגמים') or 'כל הדגמים'}")
+    lines.append(f"🏭 יצרן: {s.get('manufacturer') or 'כל היצרנים'}")
+    lines.append(f"🚘 דגם: {s.get('model') or 'כל הדגמים'}")
     if s.get("price_min") or s.get("price_max"):
         mn = f"₪{s['price_min']:,}" if s.get("price_min") else "ללא"
         mx = f"₪{s['price_max']:,}" if s.get("price_max") else "ללא"
         lines.append(f"💰 מחיר: {mn} – {mx}")
     if s.get("year_min") or s.get("year_max"):
-        lines.append(f"📅 שנה: {s.get('year_min','—')} – {s.get('year_max','—')}")
+        lines.append(f"📅 שנה: {s.get('year_min', '—')} – {s.get('year_max', '—')}")
     if s.get("km_max"):
         lines.append(f"🛣 ק\"מ מקס': {s['km_max']:,}")
-    seen = len(s.get("seen_ids", []))
+    seen = len(s.get("seen_ids") or [])
     lines.append(f"\n👁 מודעות שנראו: {seen}")
+
     keyboard = [
         [
-            InlineKeyboardButton("🗑 מחק", callback_data=f"del_{sid}"),
             InlineKeyboardButton("🔄 בדוק עכשיו", callback_data=f"chk_{sid}"),
         ],
         [InlineKeyboardButton("« חזרה", callback_data="back_to_list")],
@@ -494,48 +216,37 @@ async def view_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def delete_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = str(query.message.chat_id)
-    sid = query.data.replace("del_", "")
-    searches = search_manager.get_searches(user_id)
-    name = searches.get(sid, {}).get("name", "")
-    search_manager.delete_search(user_id, sid)
-    await query.edit_message_text(f"🗑 החיפוש *{name}* נמחק.", parse_mode="Markdown")
-
-
 async def check_single(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer("🔄 בודק...")
-    user_id = str(query.message.chat_id)
+    chat_id = str(query.message.chat_id)
     sid = query.data.replace("chk_", "")
-    searches = search_manager.get_searches(user_id)
-    s = searches.get(sid)
+
+    searches = sb.get_searches(chat_id)
+    s = next((x for x in searches if x["id"] == sid), None)
     if not s:
         await query.edit_message_text("❌ החיפוש לא נמצא.")
         return
+
     await query.edit_message_text(f"🔄 בודק את *{s['name']}*...", parse_mode="Markdown")
-    new_listings = await scraper.fetch_new_listings(s, search_manager, user_id, sid)
+    new_listings = await _fetch_new(s)
     if new_listings:
         for listing in new_listings:
-            await send_listing(context.bot, int(user_id), listing, s["name"])
-        await context.bot.send_message(int(user_id), f"✅ נמצאו {len(new_listings)} מודעות חדשות!")
+            await send_listing(context.bot, int(chat_id), listing, s["name"])
+        await context.bot.send_message(int(chat_id), f"✅ נמצאו {len(new_listings)} מודעות חדשות!")
     else:
-        await context.bot.send_message(int(user_id), "😴 אין מודעות חדשות כרגע.")
+        await context.bot.send_message(int(chat_id), "😴 אין מודעות חדשות כרגע.")
 
 
 async def back_to_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    user_id = str(query.message.chat_id)
-    searches = search_manager.get_searches(user_id)
+    chat_id = str(query.message.chat_id)
+    searches = sb.get_searches(chat_id)
     if not searches:
         await query.edit_message_text("📭 אין חיפושים שמורים.")
         return
-    keyboard = []
-    for sid, s in searches.items():
-        keyboard.append([InlineKeyboardButton(f"🔍 {s['name']}", callback_data=f"view_{sid}")])
+    keyboard = [[InlineKeyboardButton(f"🔍 {s['name']}", callback_data=f"view_{s['id']}")] for s in searches]
     await query.edit_message_text(
         f"📋 *החיפושים שלך* ({len(searches)}):",
         parse_mode="Markdown",
@@ -543,139 +254,196 @@ async def back_to_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# ── /check_now ────────────────────────────────────────────────────────────────
+
 async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_chat.id)
-    logger.info(f"check_now called by user {user_id}")
-    try:
-        searches = search_manager.get_searches(user_id)
-        if not searches:
-            await update.message.reply_text(
-                f"📭 אין לך חיפושים.\n🔑 Chat ID שלך: `{user_id}`",
-                parse_mode="Markdown"
-            )
-            return
-        await update.message.reply_text(f"🔄 בודק {len(searches)} חיפושים...")
-        total = 0
-        for sid, s in searches.items():
-            try:
-                all_listings = await scraper.fetch_listings(s)
-                seen = set(search_manager.get_seen_ids(user_id, sid))
-                new_listings = [l for l in all_listings if l["id"] not in seen]
-                if new_listings:
-                    search_manager.mark_seen(user_id, sid, [l["id"] for l in new_listings])
-                for listing in new_listings[:15]:
-                    await send_listing(context.bot, int(user_id), listing, s["name"])
-                    total += 1
-                if not new_listings:
-                    await update.message.reply_text(
-                        f"😴 *{s['name']}* – אין מודעות חדשות.\n"
-                        f"📊 סה\"כ {len(all_listings)} מודעות קיימות ביד2.\n"
-                        f"💡 שלח /show\\_current לראות את כל המודעות הנוכחיות.",
-                        parse_mode="Markdown"
-                    )
-            except Exception as e:
-                logger.error(f"Error fetching listings for search {sid}: {e}", exc_info=True)
-                await update.message.reply_text(f"⚠️ שגיאה בחיפוש '{s.get('name', sid)}': {e}")
-        if total:
-            await update.message.reply_text(f"✅ נמצאו {total} מודעות חדשות!")
-    except Exception as e:
-        logger.error(f"check_now error: {e}", exc_info=True)
-        await update.message.reply_text(f"❌ שגיאה: {e}")
-
-
-async def show_current(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_chat.id)
-    searches = search_manager.get_searches(user_id)
-    if not searches:
-        await update.message.reply_text("📭 אין לך חיפושים שמורים.")
+    chat_id = str(update.effective_chat.id)
+    profile = sb.get_profile_by_chat(chat_id)
+    if not profile:
+        context.user_data[WAITING_EMAIL] = True
+        await update.message.reply_text("⚠️ חשבונך אינו מחובר. שלח לי את המייל שלך:")
         return
-    await update.message.reply_text("🔄 שולף מודעות קיימות מיד2...")
-    for sid, s in searches.items():
-        try:
-            listings = await scraper.fetch_listings(s)
-            if not listings:
-                await update.message.reply_text(f"📭 *{s['name']}* – לא נמצאו מודעות.", parse_mode="Markdown")
-                continue
-            search_manager.mark_seen(user_id, sid, [l["id"] for l in listings])
-            await update.message.reply_text(f"📋 *{s['name']}* – {len(listings)} מודעות:", parse_mode="Markdown")
-            for listing in listings[:15]:
-                await send_listing(context.bot, int(user_id), listing, s["name"])
-        except Exception as e:
-            await update.message.reply_text(f"⚠️ שגיאה: {e}")
 
+    searches = sb.get_searches(chat_id)
+    if not searches:
+        await update.message.reply_text("📭 אין חיפושים. הוסף חיפוש באתר.")
+        return
+
+    await update.message.reply_text(f"🔄 בודק {len(searches)} חיפושים...")
+    total = 0
+    for s in searches:
+        try:
+            new_listings = await _fetch_new(s)
+            for listing in new_listings[:15]:
+                await send_listing(context.bot, int(chat_id), listing, s["name"])
+                total += 1
+            if not new_listings:
+                await update.message.reply_text(f"😴 *{s['name']}* – אין מודעות חדשות.", parse_mode="Markdown")
+        except Exception as e:
+            logger.error(f"check_now error for {s['id']}: {e}", exc_info=True)
+    if total:
+        await update.message.reply_text(f"✅ נמצאו {total} מודעות חדשות!")
+
+
+# ── Scheduled poll ────────────────────────────────────────────────────────────
 
 async def poll_all_searches(context: ContextTypes.DEFAULT_TYPE):
     logger.info("⏱ Running scheduled poll...")
-    for user_id in search_manager.get_all_users():
-        for sid, s in search_manager.get_searches(user_id).items():
+    try:
+        for chat_id, s in sb.get_all_searches():
             try:
-                new_listings = await scraper.fetch_new_listings(s, search_manager, user_id, sid)
+                new_listings = await _fetch_new(s)
                 for listing in new_listings:
-                    await send_listing(context.bot, int(user_id), listing, s["name"])
-                    logger.info(f"Sent listing {listing['id']} to {user_id}")
+                    await send_listing(context.bot, int(chat_id), listing, s["name"])
+                    logger.info(f"Sent listing {listing['id']} to {chat_id}")
             except Exception as e:
-                logger.error(f"Error polling {sid} for {user_id}: {e}")
+                logger.error(f"Error polling search {s.get('id')} for {chat_id}: {e}")
+    except Exception as e:
+        logger.error(f"poll_all_searches crashed: {e}", exc_info=True)
 
+
+# ── Fetch helper (replaces scraper.fetch_new_listings) ────────────────────────
+
+async def _fetch_new(search: dict) -> list:
+    """Fetch listings not yet seen, update seen_ids in Supabase."""
+    sid = search["id"]
+    seen = set(search.get("seen_ids") or [])
+    listings = await scraper.fetch_listings(search)
+    new = [l for l in listings if l["id"] not in seen]
+    if new:
+        sb.mark_seen(sid, [l["id"] for l in new])
+    return new[:10]
+
+
+# ── send_listing ──────────────────────────────────────────────────────────────
 
 async def send_listing(bot, chat_id: int, listing: dict, search_name: str):
-    price = f"₪{listing['price']:,}" if listing.get("price") else "מחיר לא ידוע"
-    year = listing.get("year", "—")
-    km = f"{listing['km']:,} ק\"מ" if listing.get("km") else "—"
-    city = listing.get("city", "—")
-    title = listing.get("title", "רכב")
-    hand = f"יד {listing['hand']}" if listing.get("hand") else "—"
-    ownership = listing.get("ownership") or "—"
-    photo_url = listing.get("photo_url")
+    title       = listing.get("title") or "רכב"
+    trim        = listing.get("trim") or ""
+    price       = listing.get("price")
+    year        = listing.get("year") or "—"
+    km          = listing.get("km")
+    city        = listing.get("city") or "—"
+    hand_text   = listing.get("hand_text") or (f"יד {listing['hand']}" if listing.get("hand") else "—")
+    ownership   = listing.get("ownership") or "—"
+    engine_cc   = listing.get("engine_cc")
+    engine_type = listing.get("engine_type") or ""
+    horsepower  = listing.get("horsepower")
+    turbo       = listing.get("turbo", False)
+    test_date   = listing.get("test_date") or ""
+    description = listing.get("description") or ""
+    contact_phone = listing.get("contact_phone") or ""
+    contact_name  = listing.get("contact_name") or ""
+    photo_url   = listing.get("photo_url")
 
-    text = (
-        f"🚗 *{title}*\n"
-        f"💰 {price}  |  📅 {year}\n"
-        f"🛣 {km}  |  🤚 {hand}\n"
-        f"👤 בעלות: {ownership}\n"
-        f"📍 {city}"
-    )
-    keyboard = [[InlineKeyboardButton("🔗 פתח ביד2", url=listing["url"])]]
+    header = title
+    if trim:
+        header += f" | {trim}"
+
+    engine_str = ""
+    if engine_cc:
+        liters = round(engine_cc / 1000, 1)
+        engine_str = str(liters)
+        if engine_type:
+            engine_str += f" {engine_type}"
+        if turbo:
+            engine_str += " טורבו"
+        if horsepower:
+            engine_str += f" ({horsepower} כ\"ס)"
+
+    lines = [
+        "🚗 *מודעה חדשה נמצאה!* 🚗",
+        header,
+        f"🔹 שנה: {year}",
+        f"🔹 יד: {hand_text}",
+        f"🔹 בעלות: {ownership}",
+        f"🔹 קילומטראז': {km:,} ק\"מ" if km else "🔹 קילומטראז': —",
+    ]
+    if engine_str:
+        lines.append(f"🔹 נפח מנוע: {engine_str}")
+    if test_date:
+        lines.append(f"🔹 טסט עד: {test_date}")
+    lines.append(f"💰 מחיר מבוקש: {price:,} ₪" if price else "💰 מחיר: לא צוין")
+    lines.append(f"📍 אזור מכירה: {city}")
+    if description:
+        lines.append(f"✨ ציוד: {description}")
+    if contact_phone:
+        contact_line = f"📞 {contact_phone}"
+        if contact_name:
+            contact_line += f" {contact_name}"
+        lines.append(contact_line)
+
+    text = "\n".join(lines)
+    if len(text) > 1020:
+        text = text[:1020] + "..."
+
+    keyboard = [[InlineKeyboardButton("🔗 למעבר למודעה המקורית לחץ כאן", url=listing["url"])]]
     markup = InlineKeyboardMarkup(keyboard)
-    try:
-        if photo_url:
-            await bot.send_photo(
-                chat_id, photo=photo_url,
-                caption=text, parse_mode="Markdown",
-                reply_markup=markup,
-            )
-        else:
-            await bot.send_message(
-                chat_id, text, parse_mode="Markdown",
-                reply_markup=markup,
-            )
-    except Exception as e:
-        logger.error(f"Failed to send to {chat_id}: {e}")
+
+    if photo_url:
         try:
-            await bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
-        except Exception as e2:
-            logger.error(f"Fallback send failed for {chat_id}: {e2}")
+            await bot.send_photo(chat_id, photo=photo_url, caption=text, parse_mode="Markdown", reply_markup=markup)
+            return
+        except Exception as e:
+            logger.info(f"Direct URL failed for {listing['id']}: {e} — trying download")
+        photo_bytes = await scraper.download_photo(photo_url)
+        if photo_bytes:
+            try:
+                await bot.send_photo(chat_id, photo=io.BytesIO(photo_bytes), caption=text, parse_mode="Markdown", reply_markup=markup)
+                return
+            except Exception as e:
+                logger.warning(f"Photo bytes failed for {listing['id']}: {e}")
 
-
-async def debug_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔍 בודק מה Playwright רואה ביד2...")
     try:
-        info = await scraper.debug_page()
-        lines = [f"*Debug Report*\n"]
-        for k, v in info.items():
-            if k == "html_preview":
-                continue
-            lines.append(f"`{k}`: {v}")
-        if "html_preview" in info:
-            lines.append(f"\n*HTML preview:*\n```\n{str(info['html_preview'])[:800]}\n```")
-        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        await bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
     except Exception as e:
-        await update.message.reply_text(f"❌ שגיאה: {e}")
+        logger.error(f"Failed to send listing {listing['id']} to {chat_id}: {e}")
 
 
-async def stop_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_chat.id)
-    count = search_manager.delete_all_searches(user_id)
-    await update.message.reply_text(f"🛑 כל {count} החיפושים נמחקו.")
+# ── Misc commands ─────────────────────────────────────────────────────────────
+
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "📋 *פקודות:*\n\n"
+        "*/my\\_searches* – החיפושים שלי\n"
+        "*/check\\_now* – בדוק עכשיו\n"
+        "*/status* – סטטוס הבוט\n"
+        "*/clear\\_history* – אפס היסטוריה (שלח שוב מודעות ישנות)\n\n"
+        f"⏱ הבוט בודק אוטומטית כל *{config.POLL_INTERVAL_MINUTES}* דקות.\n"
+        "🌐 חיפושים מנוהלים באתר: carconnoisseur-web.vercel.app",
+        parse_mode="Markdown",
+    )
+
+
+async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    profiles = sb.get_all_linked_profiles()
+    total = sum(len(sb.get_searches(p["telegram_chat_id"])) for p in profiles)
+    await update.message.reply_text(
+        f"✅ *הבוט פעיל*\n\n"
+        f"👥 משתמשים מחוברים: {len(profiles)}\n"
+        f"🔍 סה\"כ חיפושים: {total}\n"
+        f"⏱ סריקה כל {config.POLL_INTERVAL_MINUTES} דקות",
+        parse_mode="Markdown",
+    )
+
+
+async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    import httpx
+    from supabase_manager import SUPABASE_URL, _headers
+    chat_id = str(update.effective_chat.id)
+    searches = sb.get_searches(chat_id)
+    for s in searches:
+        httpx.patch(
+            f"{SUPABASE_URL}/rest/v1/searches",
+            headers=_headers(),
+            params={"id": f"eq.{s['id']}"},
+            json={"seen_ids": []},
+            timeout=10,
+        )
+    await update.message.reply_text(
+        f"🗑 היסטוריה אופסה ל-{len(searches)} חיפושים.\n"
+        "בבדיקה הבאה הבוט ישלח שוב את המודעות העדכניות.",
+    )
 
 
 async def logs_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -687,31 +455,34 @@ async def logs_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last_lines = "".join(filtered[-60:])
         if len(last_lines) > 4000:
             last_lines = last_lines[-4000:]
-        await update.message.reply_text(f"📋 *לוג אחרון:*\n```\n{last_lines}\n```", parse_mode="Markdown")
+        await update.message.reply_text(f"📋 *לוג:*\n```\n{last_lines}\n```", parse_mode="Markdown")
     except FileNotFoundError:
         await update.message.reply_text("❌ קובץ לוג לא נמצא.")
+
+
+async def debug_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🔍 בודק חיבור ליד2...")
+    try:
+        info = await scraper.debug_page()
+        lines = ["*Debug Report*\n"]
+        for k, v in info.items():
+            if k == "html_preview":
+                continue
+            lines.append(f"`{k}`: {v}")
+        if "html_preview" in info:
+            lines.append(f"\n*HTML:*\n```\n{str(info['html_preview'])[:500]}\n```")
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"❌ שגיאה: {e}")
 
 
-async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    count = search_manager.clear_all_seen_ids()
-    await update.message.reply_text(
-        f"🗑 היסטוריה נמחקה — {count} חיפושים אופסו.\n"
-        "מהבדיקה הבאה הבוט ישלח את כל המודעות הקיימות מחדש.",
-        parse_mode="Markdown"
-    )
+# ── post_init & main ──────────────────────────────────────────────────────────
 
-
-async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    users = search_manager.get_all_users()
-    total = sum(len(search_manager.get_searches(u)) for u in users)
-    await update.message.reply_text(
-        f"✅ *הבוט פעיל*\n\n"
-        f"👥 משתמשים: {len(users)}\n"
-        f"🔍 סה\"כ חיפושים: {total}\n"
-        f"⏱ סריקה כל {config.POLL_INTERVAL_MINUTES} דקות",
-        parse_mode="Markdown"
+async def _post_init(application):
+    api.set_bot(
+        bot=application.bot,
+        loop=asyncio.get_running_loop(),
+        scraper=scraper,
     )
 
 
@@ -721,44 +492,24 @@ def main():
         logger.error("❌ TELEGRAM_TOKEN לא מוגדר")
         sys.exit(1)
 
-    logger.info("🔧 Starting API thread...")
-    start_api_thread(int(os.getenv("PORT", 8080)), sm=search_manager)
-    logger.info("🔧 API thread started")
+    api_port = int(os.getenv("API_PORT", os.getenv("PORT", "8080")))
+    start_api_thread(api_port, sm=None)
+    logger.info(f"🌐 API thread started on port {api_port}")
 
-    app = Application.builder().token(token).build()
-
-    conv = ConversationHandler(
-        entry_points=[CommandHandler("add_search", add_search_start), CommandHandler("add", add_search_start)],
-        states={
-            SEARCH_MANUFACTURER: [CallbackQueryHandler(got_manufacturer, pattern="^mfr_")],
-            SEARCH_MODEL: [CallbackQueryHandler(got_model, pattern="^mdl_"), MessageHandler(filters.TEXT & ~filters.COMMAND, got_model), CommandHandler("skip", skip_step)],
-            SEARCH_SUBMODEL: [CallbackQueryHandler(got_submodel, pattern="^sub_"), MessageHandler(filters.TEXT & ~filters.COMMAND, got_submodel), CommandHandler("skip", skip_step)],
-            SEARCH_PRICE_MIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_price_min), CommandHandler("skip", skip_step)],
-            SEARCH_PRICE_MAX: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_price_max), CommandHandler("skip", skip_step)],
-            SEARCH_YEAR_MIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_year_min), CommandHandler("skip", skip_step)],
-            SEARCH_YEAR_MAX: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_year_max), CommandHandler("skip", skip_step)],
-            SEARCH_KM_MAX: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_km_max), CommandHandler("skip", skip_step)],
-            SEARCH_CONFIRM: [CallbackQueryHandler(confirm_search, pattern="^(save|cancel)_search$")],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-    )
+    app = Application.builder().token(token).post_init(_post_init).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(CommandHandler("my_id", my_id))
     app.add_handler(CommandHandler("my_searches", my_searches))
     app.add_handler(CommandHandler("check_now", check_now))
-    app.add_handler(CommandHandler("stop_all", stop_all))
+    app.add_handler(CommandHandler("clear_history", clear_history))
     app.add_handler(CommandHandler("debug_now", debug_now))
     app.add_handler(CommandHandler("logs", logs_cmd))
     app.add_handler(CommandHandler("status", status_cmd))
-    app.add_handler(CommandHandler("show_current", show_current))
-    app.add_handler(CommandHandler("clear_history", clear_history))
-    app.add_handler(conv)
     app.add_handler(CallbackQueryHandler(view_search, pattern="^view_"))
-    app.add_handler(CallbackQueryHandler(delete_search, pattern="^del_"))
     app.add_handler(CallbackQueryHandler(check_single, pattern="^chk_"))
     app.add_handler(CallbackQueryHandler(back_to_list, pattern="^back_to_list$"))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_email))
 
     interval = config.POLL_INTERVAL_MINUTES * 60
     app.job_queue.run_repeating(poll_all_searches, interval=interval, first=30)
