@@ -8,6 +8,7 @@ import asyncio
 import io
 import logging
 import os
+import re
 import sys
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -42,6 +43,11 @@ config = Config()
 sb = SupabaseManager()
 scraper = Yad2Scraper()
 
+
+def esc(text: str) -> str:
+    """Escape special characters for MarkdownV2."""
+    return re.sub(r'([_*\[\]()~`>#+\-=|{}.!\\])', r'\\\1', str(text))
+
 # context.user_data key: True = waiting for user to type their email
 WAITING_EMAIL = "waiting_for_email"
 
@@ -53,23 +59,22 @@ SITE_URL = "https://carconnoisseur-web.vercel.app"
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat_id = str(update.effective_chat.id)
-    profile = sb.get_profile_by_chat(chat_id)
+    profile = await asyncio.to_thread(sb.get_profile_by_chat, chat_id)
 
     if profile:
-        searches = sb.get_searches(chat_id)
+        searches = await asyncio.to_thread(sb.get_searches, chat_id)
         count = len(searches)
         count_str = f"{count} חיפושים פעילים" if count != 1 else "חיפוש פעיל אחד"
         await update.message.reply_text(
-            f"👋 ברוך השב, {user.first_name}\\!\n\n"
-            f"✅ החשבון שלך מחובר \\({profile['email']}\\)\n"
+            f"👋 ברוך השב, {user.first_name}!\n\n"
+            f"✅ החשבון שלך מחובר ({profile['email']})\n"
             f"🔍 יש לך {count_str}\n\n"
             f"🌐 לניהול חיפושים: {SITE_URL}\n\n"
             "━━━━━━━━━━━━━━━\n"
-            "📋 /my\\_searches – ראה חיפושים פעילים\n"
-            "🔄 /check\\_now – בדוק מודעות עכשיו\n"
-            "🗑 /clear\\_history – שלח שוב מודעות ישנות\n"
+            "📋 /my_searches – ראה חיפושים פעילים\n"
+            "🔄 /check_now – בדוק מודעות עכשיו\n"
+            "🗑 /clear_history – שלח שוב מודעות ישנות\n"
             "📊 /status – סטטוס הבוט",
-            parse_mode="MarkdownV2",
         )
     else:
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -77,16 +82,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("🌐 פתח את האתר", url=SITE_URL)
         ]])
         await update.message.reply_text(
-            f"👋 שלום {user.first_name}\\, ברוך הבא ל\\-*CarConnoisseur*\\!\n\n"
+            f"👋 שלום {user.first_name}, ברוך הבא ל-*CarConnoisseur*!\n\n"
             "🚗 *מה זה?*\n"
-            "בוט שסורק את יד2 כל 15 דקות ושולח לך התראה ישירות לטלגרם כשמודעת רכב חדשה תואמת לחיפוש שלך\\.\n\n"
+            "בוט שסורק את יד2 כל 15 דקות ושולח לך התראה ישירות לטלגרם כשמודעת רכב חדשה תואמת לחיפוש שלך.\n\n"
             "━━━━━━━━━━━━━━━\n"
             "*איך מתחילים?*\n\n"
             "1️⃣ היכנס לאתר וצור חשבון חינם\n"
             "2️⃣ הגדר את החיפושים שלך\n"
             "3️⃣ חזור לכאן ושלח לי את כתובת המייל שלך לחיבור החשבון\n\n"
-            f"👇 לחץ כדי לפתוח את האתר:",
-            parse_mode="MarkdownV2",
+            "👇 לחץ כדי לפתוח את האתר:",
+            parse_mode="Markdown",
             reply_markup=keyboard,
         )
         context.user_data[WAITING_EMAIL] = True
@@ -113,7 +118,7 @@ async def handle_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("🔄 מחפש את החשבון...")
 
-    found = sb.link_email(chat_id, email)
+    found = await asyncio.to_thread(sb.link_email, chat_id, email)
     context.user_data[WAITING_EMAIL] = False
 
     if not found:
@@ -123,25 +128,25 @@ async def handle_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]])
         await update.message.reply_text(
             f"❌ לא נמצא חשבון עם המייל *{email}*\n\n"
-            "ייתכן שעדיין לא נרשמת לאתר, או שהמייל שגוי\\.\n\n"
+            "ייתכן שעדיין לא נרשמת לאתר, או שהמייל שגוי.\n\n"
             "👇 הירשם באתר ואז חזור ושלח שוב את המייל:",
-            parse_mode="MarkdownV2",
+            parse_mode="Markdown",
             reply_markup=keyboard,
         )
         return
 
-    searches = sb.get_searches(chat_id)
+    searches = await asyncio.to_thread(sb.get_searches, chat_id)
     count = len(searches)
     count_str = f"{count} חיפושים" if count != 1 else "חיפוש אחד"
     await update.message.reply_text(
-        "🎉 *החשבון חובר בהצלחה\\!*\n\n"
+        "🎉 *החשבון חובר בהצלחה!*\n\n"
         f"📧 {email}\n"
         f"🔍 נמצאו {count_str} פעילים\n\n"
-        "מעכשיו תקבל התראה ישירות לכאן בכל פעם שמודעה חדשה תואמת לחיפוש שלך\\.\n\n"
+        "מעכשיו תקבל התראה ישירות לכאן בכל פעם שמודעה חדשה תואמת לחיפוש שלך.\n\n"
         "━━━━━━━━━━━━━━━\n"
         "לניהול חיפושים נוספים — היכנס לאתר:\n"
         f"{SITE_URL}",
-        parse_mode="MarkdownV2",
+        parse_mode="Markdown",
     )
 
 
@@ -149,7 +154,7 @@ async def handle_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def my_searches(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
-    profile = sb.get_profile_by_chat(chat_id)
+    profile = await asyncio.to_thread(sb.get_profile_by_chat, chat_id)
 
     if not profile:
         context.user_data[WAITING_EMAIL] = True
@@ -158,7 +163,7 @@ async def my_searches(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    searches = sb.get_searches(chat_id)
+    searches = await asyncio.to_thread(sb.get_searches, chat_id)
     if not searches:
         await update.message.reply_text(
             "📭 אין לך חיפושים שמורים.\n\n"
@@ -258,13 +263,13 @@ async def back_to_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
-    profile = sb.get_profile_by_chat(chat_id)
+    profile = await asyncio.to_thread(sb.get_profile_by_chat, chat_id)
     if not profile:
         context.user_data[WAITING_EMAIL] = True
         await update.message.reply_text("⚠️ חשבונך אינו מחובר. שלח לי את המייל שלך:")
         return
 
-    searches = sb.get_searches(chat_id)
+    searches = await asyncio.to_thread(sb.get_searches, chat_id)
     if not searches:
         await update.message.reply_text("📭 אין חיפושים. הוסף חיפוש באתר.")
         return
@@ -416,8 +421,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    profiles = sb.get_all_linked_profiles()
-    total = sum(len(sb.get_searches(p["telegram_chat_id"])) for p in profiles)
+    profiles = await asyncio.to_thread(sb.get_all_linked_profiles)
+    total = sum(len(await asyncio.to_thread(sb.get_searches, p["telegram_chat_id"])) for p in profiles)
     await update.message.reply_text(
         f"✅ *הבוט פעיל*\n\n"
         f"👥 משתמשים מחוברים: {len(profiles)}\n"
