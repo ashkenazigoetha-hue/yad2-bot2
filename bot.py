@@ -157,6 +157,17 @@ async def handle_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
     )
 
+    # Send 10 most recent listings immediately after linking
+    for s in searches:
+        new_listings = await _fetch_new(s)
+        if new_listings:
+            await update.message.reply_text(
+                f"🚗 *{s['name']}* — {len(new_listings)} מודעות עכשיו:",
+                parse_mode="Markdown",
+            )
+            for listing in new_listings:
+                await send_listing(context.bot, int(chat_id), listing, s["name"])
+
 
 # ── /my_searches ──────────────────────────────────────────────────────────────
 
