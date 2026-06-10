@@ -508,20 +508,18 @@ async def debug_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     s = searches[0]
     await update.message.reply_text(f"🔍 מביא מודעות גולמיות עבור: *{s['name']}*", parse_mode="Markdown")
     try:
-        # Fetch WITHOUT model filter
-        from yad2_scraper import Yad2Scraper
-        params = scraper._build_params(s)
         from urllib.parse import urlencode
+        params = scraper._build_params(s)
         url = f"https://www.yad2.co.il/vehicles/cars?{urlencode(params)}"
         raw = await scraper._fetch_url(url)
-        lines = [f"סה\"כ: {len(raw)} מודעות\nURL: `{url}`\n\nדוגמאות model_text | trim:"]
+        lines = [f"סה\"כ: {len(raw)} מודעות\n"]
         for item in raw[:8]:
             mt = item.get("model_text", "—")
-            tr = item.get("trim", "—")
-            lines.append(f"• model: `{mt}` | trim: `{tr[:40]}`")
-        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+            tr = (item.get("trim") or "—")[:40]
+            lines.append(f"model: [{mt}] | trim: [{tr}]")
+        await update.message.reply_text("\n".join(lines))
     except Exception as e:
-        await update.message.reply_text(f"❌ {e}")
+        await update.message.reply_text(f"שגיאה: {e}")
 
 
 # ── post_init & main ──────────────────────────────────────────────────────────
