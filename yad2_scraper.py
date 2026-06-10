@@ -276,6 +276,15 @@ class Yad2Scraper:
             # Also check legacy top-level fields
             if not photo_url:
                 photo_url = item.get("mainImage") or item.get("coverImage")
+            # Fallback: top-level images array (format used in some yad2 responses)
+            if not photo_url:
+                top_imgs = item.get("images", [])
+                if top_imgs and isinstance(top_imgs, list):
+                    first = top_imgs[0]
+                    if isinstance(first, dict):
+                        photo_url = first.get("src") or first.get("url") or first.get("uri") or first.get("thumbnail")
+                    elif isinstance(first, str):
+                        photo_url = first
             if photo_url:
                 if photo_url.startswith("//"):
                     photo_url = "https:" + photo_url
