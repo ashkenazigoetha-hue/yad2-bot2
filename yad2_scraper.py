@@ -257,6 +257,43 @@ class Yad2Scraper:
 
         return True
 
+    async def _fetch_item_km(self, token: str) -> Optional[int]:
+        """Fetch km for a single listing by loading its detail page."""
+        try:
+            session = await self._get_session()
+            r = await session.get(
+                f"https://www.yad2.co.il/item/{token}",
+                impersonate="chrome124",
+                headers={"Accept-Language": "he-IL,he;q=0.9"},
+                timeout=12,
+            )
+            if r.status_code != 200:
+                return None
+            nd = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', r.text, re.DOTALL)
+            if not nd:
+                return None
+            data = json.loads(nd.group(1))
+            queries = (data.get("props", {}).get("pageProps", {})
+                       .get("dehydratedState", {}).get("queries", []))
+            for q in queries:
+                if q.get("queryKey", [None])[0] == "vehicles":
+                    return q["state"]["data"].get("km")
+        except Exception as e:
+            logger.debug(f"_fetch_item_km {token}: {e}")
+        return None
+
+    async def enrich_with_km(self, listings: list[dict]) -> list[dict]:
+        """Fetch km for each listing concurrently and inject into dict."""
+        import asyncio as _asyncio
+        km_values = await _asyncio.gather(
+            *[self._fetch_item_km(l["id"]) for l in listings],
+            return_exceptions=True,
+        )
+        for listing, km in zip(listings, km_values):
+            if isinstance(km, int):
+                listing["km"] = km
+        return listings
+
     async def _fetch_url(self, url: str) -> list[dict]:
         session = await self._get_session()
         response = await session.get(

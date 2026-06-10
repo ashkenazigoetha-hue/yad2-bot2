@@ -339,12 +339,14 @@ async def _fetch_new(search: dict) -> list:
         if is_first_run:
             if listings:
                 await asyncio.to_thread(sb.mark_seen, sid, [l["id"] for l in listings])
-            return listings[:10]
+            to_send = listings[:10]
+            return await scraper.enrich_with_km(to_send)
 
         new = [l for l in listings if l["id"] not in seen]
         if new:
             await asyncio.to_thread(sb.mark_seen, sid, [l["id"] for l in new])
-        return new[:15]
+        to_send = new[:15]
+        return await scraper.enrich_with_km(to_send)
 
 
 # ── send_listing ──────────────────────────────────────────────────────────────
@@ -389,7 +391,7 @@ async def send_listing(bot, chat_id: int, listing: dict, search_name: str):
         f"🔹 שנה: {year}",
         f"🔹 יד: {hand_text}",
         f"🔹 בעלות: {ownership}",
-        f"🔹 קילומטראז': {km:,} ק\"מ" if km else None,
+        f"🔹 קילומטראז': {km:,} ק\"מ" if km else "🔹 קילומטראז': —",
     ]
     if engine_str:
         lines.append(f"🔹 נפח מנוע: {engine_str}")
