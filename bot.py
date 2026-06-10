@@ -389,7 +389,7 @@ async def send_listing(bot, chat_id: int, listing: dict, search_name: str):
         f"🔹 שנה: {year}",
         f"🔹 יד: {hand_text}",
         f"🔹 בעלות: {ownership}",
-        f"🔹 קילומטראז': {km:,} ק\"מ" if km else "🔹 קילומטראז': —",
+        f"🔹 קילומטראז': {km:,} ק\"מ" if km else None,
     ]
     if engine_str:
         lines.append(f"🔹 נפח מנוע: {engine_str}")
@@ -405,7 +405,7 @@ async def send_listing(bot, chat_id: int, listing: dict, search_name: str):
             contact_line += f" {contact_name}"
         lines.append(contact_line)
 
-    text = "\n".join(lines)
+    text = "\n".join(l for l in lines if l is not None)
     if len(text) > 1020:
         text = text[:1020] + "..."
 
