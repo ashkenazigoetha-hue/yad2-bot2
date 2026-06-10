@@ -324,7 +324,7 @@ class Yad2Scraper:
             return []
         return self._parse_page(html)
 
-    async def fetch_listings(self, search: dict) -> list[dict]:
+    async def fetch_listings(self, search: dict, seen_ids: set = None) -> list[dict]:
         try:
             params = self._build_params(search)
             # Sort by newest first so fresh listings appear on page 1
@@ -333,8 +333,9 @@ class Yad2Scraper:
             wanted_sub = str(search.get("sub_model") or "").strip()
 
             all_results: list[dict] = []
-            # Always fetch at least 2 pages — promoted listings push new ones to page 2
-            max_pages = 4 if (wanted_model or wanted_sub) else 2
+            # Promoted/boost listings dominate pages 1-2; new organic listings land on page 3+.
+            # Fetch up to 5 pages, but stop early once a full page contains only already-seen IDs.
+            max_pages = 5
             for page in range(1, max_pages + 1):
                 p = dict(params)
                 if page > 1:
@@ -344,7 +345,17 @@ class Yad2Scraper:
                 if not page_results:
                     break
                 all_results.extend(page_results)
-                if page > 1 and len(all_results) > 200:
+
+                # Smart early stop: once past page 1, if every listing on this page was
+                # already seen, there's no point going deeper — new listings would have
+                # appeared earlier in the date-sorted feed.
+                if seen_ids is not None and page >= 2 and page_results:
+                    new_on_page = [r for r in page_results if r["id"] not in seen_ids]
+                    if not new_on_page:
+                        logger.info(f"Page {page}: all {len(page_results)} listings already seen — stopping pagination")
+                        break
+
+                if len(all_results) > 300:
                     break
 
             # Deduplicate by id

@@ -349,7 +349,7 @@ async def _fetch_new(search: dict) -> list:
         seen = set(fresh_seen or [])
         is_first_run = len(seen) == 0
 
-        listings = await scraper.fetch_listings(search)
+        listings = await scraper.fetch_listings(search, seen_ids=seen)
 
         # Filter to listings from the last 7 days, sort newest first
         fresh = [l for l in listings if scraper._is_recent(l.get("listing_date"))]
@@ -569,12 +569,16 @@ async def debug_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         raw = await scraper._fetch_url(url)
         filtered = [r for r in raw if scraper._matches_search(r, s)]
-        lines = [f"גולמי: {len(raw)} | אחרי סינון: {len(filtered)}\n"]
-        for item in raw[:8]:
+        seen_ids = set(await asyncio.to_thread(sb.get_seen_ids, s["id"]))
+        lines = [f"גולמי: {len(raw)} | אחרי סינון: {len(filtered)} | כבר-נראו: {len(seen_ids)}\n"]
+        for item in raw[:12]:
             mt = item.get("model_text", "—")
-            tr = (item.get("trim") or "—")[:30]
+            raw_date = item.get("listing_date")
+            dt = scraper._parse_listing_date(raw_date)
+            date_str = dt.strftime("%d/%m %H:%M") if dt else str(raw_date or "—")[:16]
             match = "✅" if scraper._matches_search(item, s) else "❌"
-            lines.append(f"{match} [{mt}] | [{tr}]")
+            seen_mark = "👁" if item["id"] in seen_ids else "🆕"
+            lines.append(f"{match}{seen_mark} [{mt}] | {date_str}")
         await update.message.reply_text("\n".join(lines))
     except Exception as e:
         await update.message.reply_text(f"שגיאה: {e}")
