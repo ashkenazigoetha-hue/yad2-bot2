@@ -557,7 +557,7 @@ class Yad2Scraper:
             logger.debug(f"parse_item error: {e}", exc_info=True)
             return None
 
-    MAX_LISTING_AGE_DAYS = 7
+    MAX_LISTING_AGE_DAYS = 14
 
     def _parse_listing_date(self, date_str) -> Optional[datetime]:
         if not date_str:
