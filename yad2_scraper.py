@@ -130,19 +130,19 @@ class Yad2Scraper:
         return params
 
     def _matches_search(self, listing: dict, search: dict) -> bool:
-        """Client-side exact match for model and sub_model."""
-        wanted_model = (search.get("model") or "").strip()
-        wanted_sub = (search.get("sub_model") or "").strip()
+        """Client-side model and sub_model match (substring, case-insensitive)."""
+        wanted_model = (search.get("model") or "").strip().lower()
+        wanted_sub = (search.get("sub_model") or "").strip().lower()
 
         if wanted_model:
-            listing_model = (listing.get("model_text") or "").strip()
-            if listing_model.lower() != wanted_model.lower():
+            listing_model = (listing.get("model_text") or "").strip().lower()
+            # Accept if either contains the other (handles "A3" vs "A3 Sportback" etc.)
+            if wanted_model not in listing_model and listing_model not in wanted_model:
                 return False
 
         if wanted_sub:
-            listing_trim = (listing.get("trim") or "").strip()
-            # sub_model must appear as a substring of the trim description
-            if wanted_sub.lower() not in listing_trim.lower():
+            listing_trim = (listing.get("trim") or "").strip().lower()
+            if wanted_sub not in listing_trim:
                 return False
 
         return True
