@@ -315,12 +315,14 @@ class Yad2Scraper:
     async def fetch_listings(self, search: dict) -> list[dict]:
         try:
             params = self._build_params(search)
-            wanted_model = (search.get("model") or "").strip()
-            wanted_sub = (search.get("sub_model") or "").strip()
+            # Sort by newest first so fresh listings appear on page 1
+            params["order"] = "date"
+            wanted_model = str(search.get("model") or "").strip()
+            wanted_sub = str(search.get("sub_model") or "").strip()
 
             all_results: list[dict] = []
-            # Fetch up to 4 pages to ensure we don't miss results on later pages
-            max_pages = 4 if (wanted_model or wanted_sub) else 1
+            # Always fetch at least 2 pages — promoted listings push new ones to page 2
+            max_pages = 4 if (wanted_model or wanted_sub) else 2
             for page in range(1, max_pages + 1):
                 p = dict(params)
                 if page > 1:
@@ -330,7 +332,6 @@ class Yad2Scraper:
                 if not page_results:
                     break
                 all_results.extend(page_results)
-                # Stop early if we already have plenty of filtered results
                 if page > 1 and len(all_results) > 200:
                     break
 

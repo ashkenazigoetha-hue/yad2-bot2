@@ -336,28 +336,30 @@ _fetch_locks: dict[str, asyncio.Lock] = {}
 async def _fetch_new(search: dict) -> list:
     """Fetch listings not yet seen, update seen_ids in Supabase."""
     sid = search["id"]
-    # One lock per search — prevents /start and poll_all_searches running concurrently
     if sid not in _fetch_locks:
         _fetch_locks[sid] = asyncio.Lock()
     async with _fetch_locks[sid]:
-        # Always read fresh seen_ids from Supabase to avoid stale cached dicts
         fresh_seen = await asyncio.to_thread(sb.get_seen_ids, sid)
         seen = set(fresh_seen or [])
         is_first_run = len(seen) == 0
 
         listings = await scraper.fetch_listings(search)
 
-        if is_first_run:
-            if listings:
-                await asyncio.to_thread(sb.mark_seen, sid, [l["id"] for l in listings])
-            to_send = listings[:10]
-            return await scraper.enrich_with_km(to_send)
+        # Filter to listings from the last 7 days, sort newest first
+        fresh = [l for l in listings if scraper._is_recent(l.get("listing_date"))]
+        fresh.sort(key=lambda l: scraper._parse_listing_date(l.get("listing_date")) or __import__("datetime").datetime.min, reverse=True)
 
-        new = [l for l in listings if l["id"] not in seen]
-        if new:
-            await asyncio.to_thread(sb.mark_seen, sid, [l["id"] for l in new])
-        to_send = new[:15]
-        return await scraper.enrich_with_km(to_send)
+        # Mark ALL fetched IDs as seen (prevents old ones from ever being re-sent)
+        if listings:
+            await asyncio.to_thread(sb.mark_seen, sid, [l["id"] for l in listings])
+
+        if is_first_run:
+            logger.info(f"First run {sid}: {len(listings)} total, {len(fresh)} recent → sending top 10")
+            return await scraper.enrich_with_km(fresh[:10])
+
+        new = [l for l in fresh if l["id"] not in seen]
+        logger.info(f"Poll {sid}: {len(listings)} fetched, {len(fresh)} recent, {len(new)} new")
+        return await scraper.enrich_with_km(new[:15])
 
 
 # ── send_listing ──────────────────────────────────────────────────────────────
