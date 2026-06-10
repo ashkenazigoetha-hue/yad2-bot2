@@ -133,6 +133,20 @@ MODEL_MAP = {
 }
 
 
+# Words we use in sub_model labels → how they appear in Yad2 trim text
+SUBMODEL_SYNONYMS: dict[str, list[str]] = {
+    "sportback": ["האצ'בק", "sportback", "5 דל"],
+    "sedan":     ["סדאן", "sedan", "4 דל"],
+    "avant":     ["אוואנט", "avant"],
+    "allroad":   ["אולרוד", "allroad"],
+    "cabriolet": ["קבריולט", "cabriolet", "cabrio"],
+    "coupe":     ["קופה", "coupe"],
+    "phev":      ["phev", "plug-in", "פלאג"],
+    "hybrid":    ["היברידי", "hybrid"],
+    "electric":  ["חשמלי", "electric", "ev"],
+}
+
+
 class Yad2Scraper:
     def __init__(self):
         self._session: Optional[AsyncSession] = None
@@ -233,8 +247,13 @@ class Yad2Scraper:
         if wanted_sub:
             if not wanted_sub.isdigit():
                 listing_trim = (listing.get("trim") or "").strip().lower()
-                if wanted_sub.lower() not in listing_trim:
-                    return False
+                # Split "Sportback 1.5" into tokens and match each one separately.
+                # Text tokens use synonym table (Yad2 writes "האצ'בק" not "Sportback").
+                # Numeric tokens like "1.5" are matched literally.
+                for token in wanted_sub.lower().split():
+                    synonyms = SUBMODEL_SYNONYMS.get(token, [token])
+                    if not any(syn in listing_trim for syn in synonyms):
+                        return False
 
         return True
 
