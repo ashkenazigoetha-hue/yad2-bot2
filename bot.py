@@ -71,11 +71,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔍 יש לך {count_str}\n\n"
             f"🌐 לניהול חיפושים: {SITE_URL}\n\n"
             "━━━━━━━━━━━━━━━\n"
-            "📋 /my_searches – ראה חיפושים פעילים\n"
-            "🔄 /check_now – בדוק מודעות עכשיו\n"
-            "🗑 /clear_history – שלח שוב מודעות ישנות\n"
-            "📊 /status – סטטוס הבוט",
+            "📋 /my_searches – החיפושים שלי\n"
+            "🔄 /check_now – בדוק מודעות עכשיו",
         )
+        # Send up to 10 current listings for each search immediately
+        for s in searches:
+            try:
+                new_listings = await _fetch_new(s)
+                if new_listings:
+                    await update.message.reply_text(f"🚗 *{s['name']}* — {len(new_listings)} מודעות עכשיו:", parse_mode="Markdown")
+                    for listing in new_listings:
+                        await send_listing(context.bot, int(chat_id), listing, s["name"])
+            except Exception as e:
+                logger.error(f"start fetch error for {s.get('id')}: {e}")
     else:
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         keyboard = InlineKeyboardMarkup([[
@@ -313,11 +321,20 @@ async def _fetch_new(search: dict) -> list:
     """Fetch listings not yet seen, update seen_ids in Supabase."""
     sid = search["id"]
     seen = set(search.get("seen_ids") or [])
+    is_first_run = len(seen) == 0
+
     listings = await scraper.fetch_listings(search)
+
+    if is_first_run:
+        # Mark ALL as seen so future polls only send truly new ones
+        if listings:
+            await asyncio.to_thread(sb.mark_seen, sid, [l["id"] for l in listings])
+        return listings[:10]
+
     new = [l for l in listings if l["id"] not in seen]
     if new:
-        sb.mark_seen(sid, [l["id"] for l in new])
-    return new[:10]
+        await asyncio.to_thread(sb.mark_seen, sid, [l["id"] for l in new])
+    return new[:15]
 
 
 # ── send_listing ──────────────────────────────────────────────────────────────
