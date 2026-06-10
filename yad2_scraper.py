@@ -113,8 +113,10 @@ class Yad2Scraper:
             elif heb:
                 params["manufacturer"] = heb
 
-        # We don't pass model/subModel to the URL because Yad2 needs internal
-        # numeric IDs we don't have. Instead we filter client-side after fetch.
+        # Pass model name directly — Yad2 accepts text model names in the URL
+        model = (search.get("model") or "").strip()
+        if model:
+            params["model"] = model
 
         if search.get("price_min"):
             params["price"] = search["price_min"]
