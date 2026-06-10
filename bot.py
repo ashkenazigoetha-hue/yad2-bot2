@@ -197,7 +197,7 @@ async def view_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(query.message.chat_id)
     sid = query.data.replace("view_", "")
 
-    searches = sb.get_searches(chat_id)
+    searches = await asyncio.to_thread(sb.get_searches, chat_id)
     s = next((x for x in searches if x["id"] == sid), None)
     if not s:
         await query.edit_message_text("❌ החיפוש לא נמצא.")
@@ -235,7 +235,7 @@ async def check_single(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(query.message.chat_id)
     sid = query.data.replace("chk_", "")
 
-    searches = sb.get_searches(chat_id)
+    searches = await asyncio.to_thread(sb.get_searches, chat_id)
     s = next((x for x in searches if x["id"] == sid), None)
     if not s:
         await query.edit_message_text("❌ החיפוש לא נמצא.")
@@ -255,7 +255,7 @@ async def back_to_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     chat_id = str(query.message.chat_id)
-    searches = sb.get_searches(chat_id)
+    searches = await asyncio.to_thread(sb.get_searches, chat_id)
     if not searches:
         await query.edit_message_text("📭 אין חיפושים שמורים.")
         return
@@ -303,14 +303,16 @@ async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def poll_all_searches(context: ContextTypes.DEFAULT_TYPE):
     logger.info("⏱ Running scheduled poll...")
     try:
-        for chat_id, s in sb.get_all_searches():
+        all_searches = await asyncio.to_thread(sb.get_all_searches)
+        logger.info(f"Poll: {len(all_searches)} search(es) to check")
+        for chat_id, s in all_searches:
             try:
                 new_listings = await _fetch_new(s)
                 for listing in new_listings:
                     await send_listing(context.bot, int(chat_id), listing, s["name"])
                     logger.info(f"Sent listing {listing['id']} to {chat_id}")
             except Exception as e:
-                logger.error(f"Error polling search {s.get('id')} for {chat_id}: {e}")
+                logger.error(f"Error polling search {s.get('id')} for {chat_id}: {e}", exc_info=True)
     except Exception as e:
         logger.error(f"poll_all_searches crashed: {e}", exc_info=True)
 
@@ -499,24 +501,32 @@ async def debug_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def debug_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show raw model_text + trim from first 5 listings for the user's first search."""
+    """Diagnose search filtering: show URL, raw results, and how many pass the filter."""
     chat_id = str(update.effective_chat.id)
     searches = await asyncio.to_thread(sb.get_searches, chat_id)
     if not searches:
         await update.message.reply_text("אין חיפושים.")
         return
     s = searches[0]
-    await update.message.reply_text(f"🔍 מביא מודעות גולמיות עבור: *{s['name']}*", parse_mode="Markdown")
+    from urllib.parse import urlencode
+    params = scraper._build_params(s)
+    url = f"https://www.yad2.co.il/vehicles/cars?{urlencode(params)}" if params else "https://www.yad2.co.il/vehicles/cars"
+
+    await update.message.reply_text(
+        f"🔍 *{s['name']}*\n"
+        f"יצרן DB: `{s.get('manufacturer', '—')}` | דגם DB: `{s.get('model', '—')}`\n"
+        f"URL: `{url}`",
+        parse_mode="Markdown",
+    )
     try:
-        from urllib.parse import urlencode
-        params = scraper._build_params(s)
-        url = f"https://www.yad2.co.il/vehicles/cars?{urlencode(params)}"
         raw = await scraper._fetch_url(url)
-        lines = [f"סה\"כ: {len(raw)} מודעות\n"]
+        filtered = [r for r in raw if scraper._matches_search(r, s)]
+        lines = [f"גולמי: {len(raw)} | אחרי סינון: {len(filtered)}\n"]
         for item in raw[:8]:
             mt = item.get("model_text", "—")
-            tr = (item.get("trim") or "—")[:40]
-            lines.append(f"model: [{mt}] | trim: [{tr}]")
+            tr = (item.get("trim") or "—")[:30]
+            match = "✅" if scraper._matches_search(item, s) else "❌"
+            lines.append(f"{match} [{mt}] | [{tr}]")
         await update.message.reply_text("\n".join(lines))
     except Exception as e:
         await update.message.reply_text(f"שגיאה: {e}")
