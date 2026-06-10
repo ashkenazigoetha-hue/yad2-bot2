@@ -103,20 +103,22 @@ class Yad2Scraper:
     def _build_params(self, search: dict) -> dict:
         params = {}
 
-        manufacturer = (search.get("manufacturer") or "").strip()
+        manufacturer = str(search.get("manufacturer") or "").strip()
         if manufacturer:
-            # manufacturer may already be Hebrew (from website) or English (legacy)
-            heb = MANUFACTURER_MAP.get(manufacturer.lower(), manufacturer)
-            mid = YAD2_MANUFACTURER_IDS.get(heb)
-            if mid:
-                params["manufacturer"] = mid
-            elif heb:
-                params["manufacturer"] = heb
+            if manufacturer.isdigit():
+                params["manufacturer"] = int(manufacturer)
+            else:
+                heb = MANUFACTURER_MAP.get(manufacturer.lower(), manufacturer)
+                mid = YAD2_MANUFACTURER_IDS.get(heb)
+                if mid:
+                    params["manufacturer"] = mid
+                elif heb:
+                    params["manufacturer"] = heb
 
-        # Pass model name directly — Yad2 accepts text model names in the URL
-        model = (search.get("model") or "").strip()
-        if model:
-            params["model"] = model
+        # yad2 only accepts numeric model IDs — text names are silently ignored
+        model = str(search.get("model") or "").strip()
+        if model and model.isdigit():
+            params["model"] = int(model)
 
         if search.get("price_min"):
             params["price"] = search["price_min"]

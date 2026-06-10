@@ -501,23 +501,27 @@ async def debug_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def debug_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Diagnose search filtering: show URL, raw results, and how many pass the filter."""
+    """Diagnose search: show raw Supabase data, URL sent to yad2, and per-listing filter result."""
+    import json as _json
     chat_id = str(update.effective_chat.id)
     searches = await asyncio.to_thread(sb.get_searches, chat_id)
     if not searches:
         await update.message.reply_text("אין חיפושים.")
         return
     s = searches[0]
+
+    # Show raw Supabase data (minus seen_ids)
+    raw_data = {k: v for k, v in s.items() if k != "seen_ids"}
+    await update.message.reply_text(
+        f"📦 *נתונים מ-Supabase:*\n```\n{_json.dumps(raw_data, ensure_ascii=False, indent=2)}\n```",
+        parse_mode="Markdown",
+    )
+
     from urllib.parse import urlencode
     params = scraper._build_params(s)
     url = f"https://www.yad2.co.il/vehicles/cars?{urlencode(params)}" if params else "https://www.yad2.co.il/vehicles/cars"
+    await update.message.reply_text(f"🔗 URL: `{url}`", parse_mode="Markdown")
 
-    await update.message.reply_text(
-        f"🔍 *{s['name']}*\n"
-        f"יצרן DB: `{s.get('manufacturer', '—')}` | דגם DB: `{s.get('model', '—')}`\n"
-        f"URL: `{url}`",
-        parse_mode="Markdown",
-    )
     try:
         raw = await scraper._fetch_url(url)
         filtered = [r for r in raw if scraper._matches_search(r, s)]
