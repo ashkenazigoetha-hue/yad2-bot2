@@ -498,6 +498,32 @@ async def debug_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ שגיאה: {e}")
 
 
+async def debug_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show raw model_text + trim from first 5 listings for the user's first search."""
+    chat_id = str(update.effective_chat.id)
+    searches = await asyncio.to_thread(sb.get_searches, chat_id)
+    if not searches:
+        await update.message.reply_text("אין חיפושים.")
+        return
+    s = searches[0]
+    await update.message.reply_text(f"🔍 מביא מודעות גולמיות עבור: *{s['name']}*", parse_mode="Markdown")
+    try:
+        # Fetch WITHOUT model filter
+        from yad2_scraper import Yad2Scraper
+        params = scraper._build_params(s)
+        from urllib.parse import urlencode
+        url = f"https://www.yad2.co.il/vehicles/cars?{urlencode(params)}"
+        raw = await scraper._fetch_url(url)
+        lines = [f"סה\"כ: {len(raw)} מודעות\nURL: `{url}`\n\nדוגמאות model_text | trim:"]
+        for item in raw[:8]:
+            mt = item.get("model_text", "—")
+            tr = item.get("trim", "—")
+            lines.append(f"• model: `{mt}` | trim: `{tr[:40]}`")
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ {e}")
+
+
 # ── post_init & main ──────────────────────────────────────────────────────────
 
 async def _post_init(application):
@@ -526,6 +552,7 @@ def main():
     app.add_handler(CommandHandler("check_now", check_now))
     app.add_handler(CommandHandler("clear_history", clear_history))
     app.add_handler(CommandHandler("debug_now", debug_now))
+    app.add_handler(CommandHandler("debug_search", debug_search))
     app.add_handler(CommandHandler("logs", logs_cmd))
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CallbackQueryHandler(view_search, pattern="^view_"))
