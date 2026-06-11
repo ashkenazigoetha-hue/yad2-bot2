@@ -565,7 +565,7 @@ class Yad2Scraper:
 
             # adType: "private" = פרטי, "commercial" = עוסק/דילר
             ad_type   = item.get("adType", "")
-            ownership = "עוסק" if ad_type == "commercial" else "פרטי" if ad_type == "private" else ""
+            ownership = "סוכנות" if ad_type == "commercial" else "פרטית" if ad_type == "private" else ""
 
             # Engine: engineVolume (cc), engineType.text ("בנזין"/"דיזל"/"חשמלי"…)
             engine_cc = item.get("engineVolume")
@@ -666,7 +666,7 @@ class Yad2Scraper:
         dt = self._parse_listing_date(listing_date)
         if dt is None:
             return True  # no date info → don't filter out
-        return (datetime.utcnow() - dt).days <= self.MAX_LISTING_AGE_DAYS
+        return (datetime.utcnow() - dt).days < self.MAX_LISTING_AGE_DAYS
 
     async def fetch_new_listings(
         self, search: dict, search_manager, user_id: str, search_id: str
