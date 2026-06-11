@@ -70,21 +70,29 @@ class SupabaseManager:
                 result.append((p["telegram_chat_id"], s))
         return result
 
-    # ── seen_ids ──────────────────────────────────────────────────────────────
+    # ── seen_ids + seen_prices ────────────────────────────────────────────────
+
+    def get_seen_state(self, search_id: str) -> tuple[list[str], dict]:
+        """Single DB call — returns (seen_ids, seen_prices)."""
+        rows = _get("searches", {"id": f"eq.{search_id}", "select": "seen_ids,seen_prices"})
+        if not rows:
+            return [], {}
+        return (rows[0].get("seen_ids") or []), (rows[0].get("seen_prices") or {})
 
     def get_seen_ids(self, search_id: str) -> list[str]:
-        rows = _get("searches", {"id": f"eq.{search_id}", "select": "seen_ids"})
-        if not rows:
-            return []
-        # seen_ids can be NULL in DB if the column was added after row creation
-        return rows[0]["seen_ids"] or []
+        ids, _ = self.get_seen_state(search_id)
+        return ids
 
-    def mark_seen(self, search_id: str, new_ids: list[str], current: list[str] = None):
-        if not new_ids:
+    def mark_seen(self, search_id: str, new_ids: list[str], current: list[str] = None,
+                  price_map: dict = None, current_prices: dict = None):
+        if not new_ids and not price_map:
             return
-        # `current` can be passed in to avoid an extra GET round-trip
         if current is None:
-            current = self.get_seen_ids(search_id)
+            current_ids, current_prices_fetched = self.get_seen_state(search_id)
+            current = current_ids
+            if current_prices is None:
+                current_prices = current_prices_fetched
+
         seen_set = set(current)
         merged = list(current)
         for nid in new_ids:
@@ -92,5 +100,13 @@ class SupabaseManager:
                 merged.append(nid)
                 seen_set.add(nid)
         trimmed = merged[-5000:]
-        _patch("searches", {"id": f"eq.{search_id}"}, {"seen_ids": trimmed})
+
+        body: dict = {"seen_ids": trimmed}
+        if price_map is not None:
+            active = set(trimmed)
+            merged_prices = {k: v for k, v in (current_prices or {}).items() if k in active}
+            merged_prices.update({k: v for k, v in price_map.items() if k in active})
+            body["seen_prices"] = merged_prices
+
+        _patch("searches", {"id": f"eq.{search_id}"}, body)
         logger.debug(f"mark_seen {search_id}: {len(current)} → {len(trimmed)} ids")

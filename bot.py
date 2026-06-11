@@ -364,15 +364,22 @@ async def _fetch_new(search: dict) -> list:
     """Fetch listings not yet seen, update seen_ids in Supabase."""
     sid = search["id"]
     async with _fetch_locks.setdefault(sid, asyncio.Lock()):
-        fresh_seen = await asyncio.to_thread(sb.get_seen_ids, sid)
-        seen = set(fresh_seen or [])
+        seen_ids_list, seen_prices = await asyncio.to_thread(sb.get_seen_state, sid)
+        seen = set(seen_ids_list)
         is_first_run = len(seen) == 0
 
         listings = await scraper.fetch_listings(search, seen_ids=seen)
 
-        # Mark ALL fetched IDs as seen before deciding what to send
+        # Build price map for all fetched listings that have a price
+        price_map = {l["id"]: l["price"] for l in listings if l.get("price") is not None}
+
+        # Mark ALL fetched IDs as seen and persist updated prices in one DB call
         if listings:
-            await asyncio.to_thread(sb.mark_seen, sid, [l["id"] for l in listings], list(seen))
+            await asyncio.to_thread(
+                sb.mark_seen, sid,
+                [l["id"] for l in listings], seen_ids_list,
+                price_map, seen_prices,
+            )
 
         if is_first_run:
             # Welcome batch: up to 10 listings from the last 7 days, newest first
@@ -381,11 +388,22 @@ async def _fetch_new(search: dict) -> list:
             logger.info(f"First run {sid}: {len(listings)} total, {len(fresh)} recent → sending top 10")
             return await scraper.enrich_with_km(fresh[:10])
 
-        # Ongoing polls: every fetched listing is already marked seen, so
-        # anything not in seen is genuinely new (posted since last poll) — no date filter needed
+        # New listings (not seen before)
         new = [l for l in listings if l["id"] not in seen]
-        logger.info(f"Poll {sid}: {len(listings)} fetched, {len(new)} new")
-        return await scraper.enrich_with_km(new[:15])
+
+        # Price-changed listings (seen before but price differs)
+        price_changed = []
+        for l in listings:
+            if l["id"] in seen and l.get("price") is not None:
+                old_price = seen_prices.get(l["id"])
+                if old_price is not None and l["price"] != old_price:
+                    l["_price_change"] = {"old": old_price, "new": l["price"]}
+                    price_changed.append(l)
+
+        logger.info(f"Poll {sid}: {len(listings)} fetched, {len(new)} new, {len(price_changed)} price changes")
+        result = await scraper.enrich_with_km(new[:15])
+        result += await scraper.enrich_with_km(price_changed[:10])
+        return result
 
 
 # ── send_listing ──────────────────────────────────────────────────────────────
@@ -424,8 +442,17 @@ async def send_listing(bot, chat_id: int, listing: dict, search_name: str):
         if horsepower:
             engine_str += f" ({horsepower} כ\"ס)"
 
+    price_change = listing.get("_price_change")
+    if price_change:
+        old_p = price_change["old"]
+        new_p = price_change["new"]
+        arrow = "⬇️" if new_p < old_p else "⬆️"
+        price_header = f"💰 *עודכן מחיר!* {arrow} ₪{old_p:,} ← ₪{new_p:,}"
+    else:
+        price_header = None
+
     lines = [
-        "🚗 *מודעה חדשה נמצאה!* 🚗",
+        "🔄 *עודכן מחיר!*" if price_change else "🚗 *מודעה חדשה נמצאה!* 🚗",
         header,
         f"🔹 שנה: {year}",
         f"🔹 יד: {_safe(hand_text)}",
@@ -436,7 +463,10 @@ async def send_listing(bot, chat_id: int, listing: dict, search_name: str):
         lines.append(f"🔹 נפח מנוע: {engine_str}")
     if test_date:
         lines.append(f"🔹 טסט עד: {_safe(test_date)}")
-    lines.append(f"💰 מחיר מבוקש: {price:,} ₪" if price else "💰 מחיר: לא צוין")
+    if price_change:
+        lines.append(price_header)
+    else:
+        lines.append(f"💰 מחיר מבוקש: {price:,} ₪" if price else "💰 מחיר: לא צוין")
     lines.append(f"📍 אזור מכירה: {_safe(city)}")
     if description:
         lines.append(f"✨ תוספות: {_safe(description)}")
