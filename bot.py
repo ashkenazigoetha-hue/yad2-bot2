@@ -317,21 +317,27 @@ async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── Scheduled poll ────────────────────────────────────────────────────────────
 
+_poll_sem = asyncio.Semaphore(3)  # max 3 concurrent yad2 fetches
+
+
 async def poll_all_searches(context: ContextTypes.DEFAULT_TYPE):
     logger.info("⏱ Running scheduled poll...")
     try:
         all_searches = await asyncio.to_thread(sb.get_all_searches)
         logger.info(f"Poll: {len(all_searches)} search(es) to check")
-        for i, (chat_id, s) in enumerate(all_searches):
-            if i > 0:
-                await asyncio.sleep(5)  # avoid yad2 rate-limiting between searches
-            try:
+
+        async def _process_one(chat_id: str, s: dict):
+            async with _poll_sem:
                 new_listings = await _fetch_new(s)
-                for listing in new_listings:
-                    await send_listing(context.bot, int(chat_id), listing, s["name"])
-                    logger.info(f"Sent listing {listing['id']} to {chat_id}")
-            except Exception as e:
-                logger.error(f"Error polling search {s.get('id')} for {chat_id}: {e}", exc_info=True)
+            for listing in new_listings:
+                await send_listing(context.bot, int(chat_id), listing, s["name"])
+                logger.info(f"Sent listing {listing['id']} to {chat_id}")
+
+        tasks = [_process_one(chat_id, s) for chat_id, s in all_searches]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for (chat_id, s), res in zip(all_searches, results):
+            if isinstance(res, Exception):
+                logger.error(f"Error polling search {s.get('id')} for {chat_id}: {res}", exc_info=res)
     except Exception as e:
         logger.error(f"poll_all_searches crashed: {e}", exc_info=True)
 
