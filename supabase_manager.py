@@ -91,6 +91,6 @@ class SupabaseManager:
             if nid not in seen_set:
                 merged.append(nid)
                 seen_set.add(nid)
-        trimmed = merged[-2000:]
+        trimmed = merged[-5000:]
         _patch("searches", {"id": f"eq.{search_id}"}, {"seen_ids": trimmed})
         logger.debug(f"mark_seen {search_id}: {len(current)} → {len(trimmed)} ids")

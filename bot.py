@@ -345,6 +345,12 @@ async def poll_all_searches(context: ContextTypes.DEFAULT_TYPE):
                     f"Error polling search {s.get('id')} for {chat_id}: {res}",
                     exc_info=(type(res), res, res.__traceback__),
                 )
+
+        # Remove locks for searches that no longer exist to prevent unbounded growth
+        active_ids = {s["id"] for _, s in all_searches}
+        for sid in list(_fetch_locks.keys()):
+            if sid not in active_ids:
+                del _fetch_locks[sid]
     except Exception as e:
         logger.error(f"poll_all_searches crashed: {e}", exc_info=True)
 
@@ -614,7 +620,7 @@ def main():
         sys.exit(1)
 
     api_port = int(os.getenv("API_PORT", os.getenv("PORT", "8080")))
-    start_api_thread(api_port, sm=None)
+    start_api_thread(api_port)
     logger.info(f"🌐 API thread started on port {api_port}")
 
     app = Application.builder().token(token).post_init(_post_init).build()

@@ -160,6 +160,15 @@ YAD2_MODEL_IDS: dict = {
     # קופרה
     ("קופרה", "אטקה"): 12132, ("קופרה", "בורן"): 12133, ("קופרה", "טווסקאן"): 13133,
     ("קופרה", "לאון"): 12135, ("קופרה", "פורמנטור"): 12134,
+    # English aliases — website stores these names, bot needs to resolve them to IDs
+    ("יונדאי", "IONIQ"): 10279, ("יונדאי", "IONIQ 5"): 11239, ("יונדאי", "IONIQ 6"): 13099,
+    ("יונדאי", "BAYON"): 11234, ("יונדאי", "VENUE"): 10293,
+    ("יונדאי", "SANTA FE"): 10287, ("יונדאי", "KONA"): 10283,
+    ("קיה", "CEED"): 10698, ("קיה", "PROCEED"): 10698, ("קיה", "CARNIVAL"): 10697,
+    ("קיה", "NIRO"): 10708, ("קיה", "SPORTAGE"): 10720,
+    ("לנד רובר", "DEFENDER"): 10303, ("לנד רובר", "DISCOVERY"): 10304,
+    ("לנד רובר", "RANGE ROVER"): 10307, ("לנד רובר", "RANGE ROVER SPORT"): 10309,
+    ("סובארו", "FORESTER"): 10476,
 }
 
 MODEL_MAP = {
@@ -174,6 +183,13 @@ MODEL_MAP = {
     "elantra": "אלנטרה", "sportage": "ספורטז'", "rio": "ריו",
     "model 3": "מודל 3", "model s": "מודל S", "model y": "מודל Y",
     "a4": "a4", "a3": "a3", "q5": "q5", "q3": "q3",
+    # English model names used by the website that map to Hebrew yad2 names
+    "ioniq": "איוניק", "ioniq 5": "איוניק 5", "ioniq 6": "איוניק 6",
+    "bayon": "באיון", "venue": "וניו",
+    "ceed": "סיד", "proceed": "סיד", "carnival": "קרניבל", "niro": "נירו",
+    "santa fe": "סנטה פה", "kona": "קונה",
+    "range rover": "ריינג' רובר", "defender": "דיפנדר", "discovery": "דיסקברי",
+    "forester": "פורסטר",
 }
 
 
@@ -299,7 +315,11 @@ class Yad2Scraper:
                 wl = wanted_model.lower()
                 nl = normalized.lower()
                 ll = listing_model.lower()
-                if wl not in ll and ll not in wl and nl not in ll and ll not in nl:
+
+                def _word_match(pattern: str, text: str) -> bool:
+                    return bool(re.search(r'(?<!\w)' + re.escape(pattern) + r'(?!\w)', text, re.IGNORECASE))
+
+                if not (_word_match(wl, ll) or _word_match(ll, wl) or _word_match(nl, ll) or _word_match(ll, nl)):
                     return False
 
         if wanted_sub:
@@ -371,7 +391,10 @@ class Yad2Scraper:
             logger.warning(f"Bad status: {response.status_code}")
             return []
         if "__NEXT_DATA__" not in html:
-            logger.warning("No __NEXT_DATA__ — likely blocked or CAPTCHA page")
+            if "shieldsquare" in html.lower() or "captcha" in html.lower():
+                logger.warning(f"ShieldSquare/CAPTCHA detected on {url[:80]} — bot is being blocked")
+            else:
+                logger.warning(f"No __NEXT_DATA__ (status={response.status_code}) on {url[:80]} — wrong page or blocked")
             return []
         return self._parse_page(html)
 
@@ -617,7 +640,7 @@ class Yad2Scraper:
         try:
             ts = int(date_str)
             if ts > 1_000_000_000:  # sanity check — must be after year 2001
-                return datetime.fromtimestamp(ts)
+                return datetime.utcfromtimestamp(ts)  # yad2 timestamps are UTC
         except (ValueError, TypeError, OSError):
             pass
         s = str(date_str).strip()
@@ -643,7 +666,7 @@ class Yad2Scraper:
         dt = self._parse_listing_date(listing_date)
         if dt is None:
             return True  # no date info → don't filter out
-        return (datetime.now() - dt).days <= self.MAX_LISTING_AGE_DAYS
+        return (datetime.utcnow() - dt).days <= self.MAX_LISTING_AGE_DAYS
 
     async def fetch_new_listings(
         self, search: dict, search_manager, user_id: str, search_id: str

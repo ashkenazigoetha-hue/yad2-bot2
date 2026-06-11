@@ -6,8 +6,6 @@ Searches are managed via Supabase; this API is only used for monitoring.
 import json
 import logging
 import os
-import sys
-import platform
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 
@@ -52,8 +50,6 @@ class APIHandler(BaseHTTPRequestHandler):
             self.send_json(200, {
                 "status": "ok",
                 "bot_connected": _bot is not None,
-                "python": sys.version,
-                "platform": platform.platform(),
                 "storage": "supabase",
             })
         else:
@@ -66,7 +62,7 @@ def run_api(port: int = 8080):
     server.serve_forever()
 
 
-def start_api_thread(port: int = 8080, sm=None):
+def start_api_thread(port: int = 8080):
     t = threading.Thread(target=run_api, args=(port,), daemon=True)
     t.start()
     return t
