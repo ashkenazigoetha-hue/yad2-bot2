@@ -47,7 +47,7 @@ YAD2_MANUFACTURER_IDS = {
 
 # (manufacturer_hebrew, MODEL_NAME_UPPER) -> yad2 numeric model id
 YAD2_MODEL_IDS: dict = {
-    ("אאודי", "A1"): 10003, ("אאודי", "A3"): 10004, ("אאודי", "A5"): 10006,
+    ("אאודי", "A1"): 10003, ("אאודי", "A3"): 10004, ("אאודי", "A4"): 10005, ("אאודי", "A5"): 10006,
     ("אאודי", "E-TRON"): 10010, ("אאודי", "Q2"): 10011, ("אאודי", "Q3"): 10012,
     ("אאודי", "Q4 E-TRON"): 10883, ("אאודי", "Q5"): 10013, ("אאודי", "Q7"): 10014,
     ("אאודי", "Q8 E-TRON"): 13069, ("אאודי", "RS 3"): 10017, ("אאודי", "RS Q8"): 10022,
@@ -216,7 +216,14 @@ class Yad2Scraper:
                     )
                 else:
                     heb_mfr = MANUFACTURER_MAP.get(manufacturer.lower(), manufacturer)
-                model_id = YAD2_MODEL_IDS.get((heb_mfr, model.upper()))
+                # Strip manufacturer prefix if model was saved with it (e.g. "מאזדה 3" → "3")
+                model_stripped = model
+                if heb_mfr and model.startswith(heb_mfr):
+                    model_stripped = model[len(heb_mfr):].strip()
+                model_id = (
+                    YAD2_MODEL_IDS.get((heb_mfr, model_stripped.upper()))
+                    or YAD2_MODEL_IDS.get((heb_mfr, model.upper()))
+                )
                 if model_id:
                     params["model"] = model_id
                     logger.info(f"Resolved model '{model}' → ID {model_id}")

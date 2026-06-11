@@ -322,7 +322,9 @@ async def poll_all_searches(context: ContextTypes.DEFAULT_TYPE):
     try:
         all_searches = await asyncio.to_thread(sb.get_all_searches)
         logger.info(f"Poll: {len(all_searches)} search(es) to check")
-        for chat_id, s in all_searches:
+        for i, (chat_id, s) in enumerate(all_searches):
+            if i > 0:
+                await asyncio.sleep(5)  # avoid yad2 rate-limiting between searches
             try:
                 new_listings = await _fetch_new(s)
                 for listing in new_listings:
