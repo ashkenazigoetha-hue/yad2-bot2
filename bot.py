@@ -317,10 +317,14 @@ async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── Scheduled poll ────────────────────────────────────────────────────────────
 
-_poll_sem = asyncio.Semaphore(3)  # max 3 concurrent yad2 fetches
+_poll_sem: asyncio.Semaphore | None = None  # lazy-init inside event loop
 
 
 async def poll_all_searches(context: ContextTypes.DEFAULT_TYPE):
+    global _poll_sem
+    if _poll_sem is None:
+        _poll_sem = asyncio.Semaphore(3)
+
     logger.info("⏱ Running scheduled poll...")
     try:
         all_searches = await asyncio.to_thread(sb.get_all_searches)
@@ -337,7 +341,10 @@ async def poll_all_searches(context: ContextTypes.DEFAULT_TYPE):
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for (chat_id, s), res in zip(all_searches, results):
             if isinstance(res, Exception):
-                logger.error(f"Error polling search {s.get('id')} for {chat_id}: {res}", exc_info=res)
+                logger.error(
+                    f"Error polling search {s.get('id')} for {chat_id}: {res}",
+                    exc_info=(type(res), res, res.__traceback__),
+                )
     except Exception as e:
         logger.error(f"poll_all_searches crashed: {e}", exc_info=True)
 
@@ -350,9 +357,7 @@ _fetch_locks: dict[str, asyncio.Lock] = {}
 async def _fetch_new(search: dict) -> list:
     """Fetch listings not yet seen, update seen_ids in Supabase."""
     sid = search["id"]
-    if sid not in _fetch_locks:
-        _fetch_locks[sid] = asyncio.Lock()
-    async with _fetch_locks[sid]:
+    async with _fetch_locks.setdefault(sid, asyncio.Lock()):
         fresh_seen = await asyncio.to_thread(sb.get_seen_ids, sid)
         seen = set(fresh_seen or [])
         is_first_run = len(seen) == 0
@@ -418,7 +423,7 @@ async def send_listing(bot, chat_id: int, listing: dict, search_name: str):
         f"🔹 שנה: {year}",
         f"🔹 יד: {_safe(hand_text)}",
         f"🔹 בעלות: {_safe(ownership)}",
-        f"🔹 קילומטראז': {km:,} ק\"מ" if km else "🔹 קילומטראז': —",
+        f"🔹 קילומטראז': {km:,} ק\"מ" if km is not None else "🔹 קילומטראז': —",
     ]
     if engine_str:
         lines.append(f"🔹 נפח מנוע: {engine_str}")
