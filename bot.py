@@ -439,7 +439,7 @@ async def send_listing(bot, chat_id: int, listing: dict, search_name: str):
     lines.append(f"💰 מחיר מבוקש: {price:,} ₪" if price else "💰 מחיר: לא צוין")
     lines.append(f"📍 אזור מכירה: {_safe(city)}")
     if description:
-        lines.append(f"✨ ציוד: {_safe(description)}")
+        lines.append(f"✨ תוספות: {_safe(description)}")
     if contact_phone:
         contact_line = f"📞 {_safe(contact_phone)}"
         if contact_name:
