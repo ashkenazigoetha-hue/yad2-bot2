@@ -370,20 +370,21 @@ async def _fetch_new(search: dict) -> list:
 
         listings = await scraper.fetch_listings(search, seen_ids=seen)
 
-        # Filter to listings from the last 7 days, sort newest first
-        fresh = [l for l in listings if scraper._is_recent(l.get("listing_date"))]
-        fresh.sort(key=lambda l: scraper._parse_listing_date(l.get("listing_date")) or datetime.min, reverse=True)
-
-        # Mark ALL fetched IDs as seen — pass current `seen` list to avoid extra GET
+        # Mark ALL fetched IDs as seen before deciding what to send
         if listings:
             await asyncio.to_thread(sb.mark_seen, sid, [l["id"] for l in listings], list(seen))
 
         if is_first_run:
+            # Welcome batch: up to 10 listings from the last 7 days, newest first
+            fresh = [l for l in listings if scraper._is_recent(l.get("listing_date"))]
+            fresh.sort(key=lambda l: scraper._parse_listing_date(l.get("listing_date")) or datetime.min, reverse=True)
             logger.info(f"First run {sid}: {len(listings)} total, {len(fresh)} recent → sending top 10")
             return await scraper.enrich_with_km(fresh[:10])
 
-        new = [l for l in fresh if l["id"] not in seen]
-        logger.info(f"Poll {sid}: {len(listings)} fetched, {len(fresh)} recent, {len(new)} new")
+        # Ongoing polls: every fetched listing is already marked seen, so
+        # anything not in seen is genuinely new (posted since last poll) — no date filter needed
+        new = [l for l in listings if l["id"] not in seen]
+        logger.info(f"Poll {sid}: {len(listings)} fetched, {len(new)} new")
         return await scraper.enrich_with_km(new[:15])
 
 
