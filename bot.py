@@ -346,25 +346,26 @@ async def _process_search_with_listings(bot, chat_id: str, search: dict, all_lis
         # Use dict() copies — enrich_with_km mutates in-place and all_listings is shared
         matching = [dict(l) for l in all_listings if scraper._matches_search(l, search)]
 
-        # Persist seen state for all matching listings in one DB call
+        # price_map tracks current prices for ALL matching (for price-change detection)
         price_map = {l["id"]: l["price"] for l in matching if l.get("price") is not None}
-        if matching:
-            await asyncio.to_thread(
-                sb.mark_seen, sid,
-                [l["id"] for l in matching], seen_ids_list,
-                price_map, seen_prices,
-            )
 
         if is_first_run:
             fresh = [l for l in matching if scraper._is_recent(l.get("listing_date"))]
             fresh.sort(key=lambda l: scraper._parse_listing_date(l.get("listing_date")) or datetime.min, reverse=True)
-            to_send = await scraper.enrich_with_km(fresh[:10])
-            to_send = _apply_km_filter(to_send, search)
+            to_send = _apply_km_filter(await scraper.enrich_with_km(fresh[:10]), search)
+            # Seed baseline: mark ALL matching seen so next poll doesn't re-send them
+            if matching:
+                await asyncio.to_thread(
+                    sb.mark_seen, sid,
+                    [l["id"] for l in matching], seen_ids_list,
+                    price_map, seen_prices,
+                )
             logger.info(f"First run {sid}: {len(matching)} matching, {len(fresh)} recent → {len(to_send)} sent")
             for listing in to_send:
                 await send_listing(bot, int(chat_id), listing, search["name"])
             return
 
+        # _is_recent guard prevents boosted stale listings from re-firing as "new"
         new = [l for l in matching if l["id"] not in seen and scraper._is_recent(l.get("listing_date"))]
 
         price_changed = []
@@ -375,8 +376,17 @@ async def _process_search_with_listings(bot, chat_id: str, search: dict, all_lis
                     l["_price_change"] = {"old": old_price, "new": l["price"]}
                     price_changed.append(l)
 
-        to_send = _apply_km_filter(await scraper.enrich_with_km(new[:15]), search)
-        to_send += _apply_km_filter(await scraper.enrich_with_km(price_changed[:10]), search)
+        # Enrich and filter BEFORE marking seen — if enrich fails, listings retry next poll
+        new_enriched = _apply_km_filter(await scraper.enrich_with_km(new[:15]), search)
+        price_enriched = _apply_km_filter(await scraper.enrich_with_km(price_changed[:10]), search)
+        to_send = new_enriched + price_enriched
+
+        # Mark only what we send as seen_ids; pass full price_map so all prices stay tracked
+        await asyncio.to_thread(
+            sb.mark_seen, sid,
+            [l["id"] for l in to_send], seen_ids_list,
+            price_map, seen_prices,
+        )
 
         logger.info(f"Poll {sid}: {len(matching)} matching, {len(new)} new (recent), {len(price_changed)} price changes → {len(to_send)} sent")
         for listing in to_send:
@@ -477,9 +487,9 @@ async def _fetch_new(search: dict) -> list:
             fresh = [l for l in listings if scraper._is_recent(l.get("listing_date"))]
             fresh.sort(key=lambda l: scraper._parse_listing_date(l.get("listing_date")) or datetime.min, reverse=True)
             logger.info(f"First run {sid}: {len(listings)} total, {len(fresh)} recent → sending top 10")
-            return await scraper.enrich_with_km(fresh[:10])
+            return _apply_km_filter(await scraper.enrich_with_km(fresh[:10]), search)
 
-        # New listings (not seen before AND posted in the last 7 days)
+        # Only recent new listings — prevents boosted stale posts re-firing as "new"
         new = [l for l in listings if l["id"] not in seen and scraper._is_recent(l.get("listing_date"))]
 
         # Price-changed listings (seen before but price differs)
@@ -492,8 +502,8 @@ async def _fetch_new(search: dict) -> list:
                     price_changed.append(l)
 
         logger.info(f"Poll {sid}: {len(listings)} fetched, {len(new)} new, {len(price_changed)} price changes")
-        result = await scraper.enrich_with_km(new[:15])
-        result += await scraper.enrich_with_km(price_changed[:10])
+        result = _apply_km_filter(await scraper.enrich_with_km(new[:15]), search)
+        result += _apply_km_filter(await scraper.enrich_with_km(price_changed[:10]), search)
         return result
 
 

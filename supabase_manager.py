@@ -92,6 +92,9 @@ class SupabaseManager:
             current = current_ids
             if current_prices is None:
                 current_prices = current_prices_fetched
+        elif current_prices is None:
+            # current provided but current_prices omitted — fetch to avoid wiping seen_prices
+            _, current_prices = self.get_seen_state(search_id)
 
         seen_set = set(current)
         merged = list(current)

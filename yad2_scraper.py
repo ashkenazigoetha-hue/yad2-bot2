@@ -538,9 +538,11 @@ class Yad2Scraper:
             test_date = vehicle_dates.get("testDate") or item.get("testDate")
 
             # km not available in yad2 feed — only on full listing page
-            km = item.get("km") or item.get("kilometers") or item.get("mileage")
+            km = item.get("km") if item.get("km") is not None else (
+                item.get("kilometers") if item.get("kilometers") is not None else item.get("mileage")
+            )
             try:
-                km = int(km) if km else None
+                km = int(km) if km is not None else None
             except (ValueError, TypeError):
                 km = None
 
