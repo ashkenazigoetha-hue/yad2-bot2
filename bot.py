@@ -12,6 +12,7 @@ import re
 import sys
 from collections import defaultdict
 from datetime import datetime
+from typing import Optional
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -318,7 +319,7 @@ async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── Scheduled poll ────────────────────────────────────────────────────────────
 
-_poll_sem: asyncio.Semaphore | None = None  # lazy-init inside event loop
+_poll_sem: Optional[asyncio.Semaphore] = None  # lazy-init inside event loop
 
 
 def _apply_km_filter(listings: list, search: dict) -> list:

@@ -688,32 +688,6 @@ class Yad2Scraper:
             return True  # no date info → don't filter out
         return (datetime.utcnow() - dt).days < self.MAX_LISTING_AGE_DAYS
 
-    async def fetch_new_listings(
-        self, search: dict, search_manager, user_id: str, search_id: str
-    ) -> list[dict]:
-        seen_ids = set(search_manager.get_seen_ids(user_id, search_id))
-        is_first_run = len(seen_ids) == 0
-
-        all_listings = await self.fetch_listings(search)
-
-        # Drop listings older than MAX_LISTING_AGE_DAYS (when date is available)
-        fresh = [l for l in all_listings if self._is_recent(l.get("listing_date"))]
-
-        if is_first_run:
-            # Mark everything as seen; send the 10 most recent as welcome batch
-            search_manager.mark_seen(user_id, search_id, [l["id"] for l in all_listings])
-            logger.info(
-                f"First run {user_id}/{search_id}: marked {len(all_listings)} seen, "
-                f"sending top {min(10, len(fresh))} fresh"
-            )
-            return fresh[:10]
-
-        new_listings = [l for l in fresh if l["id"] not in seen_ids]
-        if new_listings:
-            search_manager.mark_seen(user_id, search_id, [l["id"] for l in new_listings])
-        logger.info(f"Poll {user_id}/{search_id}: {len(fresh)} fresh, {len(new_listings)} new")
-        return new_listings[:15]
-
     async def debug_page(self) -> dict:
         try:
             session = await self._get_session()
