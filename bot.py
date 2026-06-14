@@ -364,7 +364,7 @@ async def _process_search_with_listings(bot, chat_id: str, search: dict, all_lis
                 await send_listing(bot, int(chat_id), listing, search["name"])
             return
 
-        new = [l for l in matching if l["id"] not in seen]
+        new = [l for l in matching if l["id"] not in seen and scraper._is_recent(l.get("listing_date"))]
 
         price_changed = []
         for l in matching:
@@ -377,7 +377,7 @@ async def _process_search_with_listings(bot, chat_id: str, search: dict, all_lis
         to_send = _apply_km_filter(await scraper.enrich_with_km(new[:15]), search)
         to_send += _apply_km_filter(await scraper.enrich_with_km(price_changed[:10]), search)
 
-        logger.info(f"Poll {sid}: {len(matching)} matching, {len(new)} new, {len(price_changed)} price changes → {len(to_send)} sent")
+        logger.info(f"Poll {sid}: {len(matching)} matching, {len(new)} new (recent), {len(price_changed)} price changes → {len(to_send)} sent")
         for listing in to_send:
             await send_listing(bot, int(chat_id), listing, search["name"])
 
@@ -478,8 +478,8 @@ async def _fetch_new(search: dict) -> list:
             logger.info(f"First run {sid}: {len(listings)} total, {len(fresh)} recent → sending top 10")
             return await scraper.enrich_with_km(fresh[:10])
 
-        # New listings (not seen before)
-        new = [l for l in listings if l["id"] not in seen]
+        # New listings (not seen before AND posted in the last 7 days)
+        new = [l for l in listings if l["id"] not in seen and scraper._is_recent(l.get("listing_date"))]
 
         # Price-changed listings (seen before but price differs)
         price_changed = []
