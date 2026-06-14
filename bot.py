@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import sys
+from collections import defaultdict
 from datetime import datetime
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -320,37 +321,122 @@ async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 _poll_sem: asyncio.Semaphore | None = None  # lazy-init inside event loop
 
 
+def _apply_km_filter(listings: list, search: dict) -> list:
+    km_max = search.get("km_max")
+    if not km_max:
+        return listings
+    try:
+        limit = int(km_max)
+    except (ValueError, TypeError):
+        return listings
+    return [l for l in listings if l.get("km") is None or l["km"] <= limit]
+
+
+async def _process_search_with_listings(bot, chat_id: str, search: dict, all_listings: list):
+    """Match pre-fetched manufacturer listings against one search, send new/price-changed."""
+    sid = search["id"]
+    async with _fetch_locks.setdefault(sid, asyncio.Lock()):
+        seen_ids_list, seen_prices = await asyncio.to_thread(sb.get_seen_state, sid)
+        seen = set(seen_ids_list)
+        is_first_run = len(seen) == 0
+
+        # Client-side filter: model, sub_model, price, year (km after enrich)
+        matching = [l for l in all_listings if scraper._matches_search(l, search)]
+
+        # Persist seen state for all matching listings in one DB call
+        price_map = {l["id"]: l["price"] for l in matching if l.get("price") is not None}
+        if matching:
+            await asyncio.to_thread(
+                sb.mark_seen, sid,
+                [l["id"] for l in matching], seen_ids_list,
+                price_map, seen_prices,
+            )
+
+        if is_first_run:
+            fresh = [l for l in matching if scraper._is_recent(l.get("listing_date"))]
+            fresh.sort(key=lambda l: scraper._parse_listing_date(l.get("listing_date")) or datetime.min, reverse=True)
+            to_send = await scraper.enrich_with_km(fresh[:10])
+            to_send = _apply_km_filter(to_send, search)
+            logger.info(f"First run {sid}: {len(matching)} matching, {len(fresh)} recent → {len(to_send)} sent")
+            for listing in to_send:
+                await send_listing(bot, int(chat_id), listing, search["name"])
+            return
+
+        new = [l for l in matching if l["id"] not in seen]
+
+        price_changed = []
+        for l in matching:
+            if l["id"] in seen and l.get("price") is not None:
+                old_price = seen_prices.get(l["id"])
+                if old_price is not None and l["price"] != old_price:
+                    lc = dict(l)
+                    lc["_price_change"] = {"old": old_price, "new": l["price"]}
+                    price_changed.append(lc)
+
+        to_send = await scraper.enrich_with_km(new[:15])
+        to_send = _apply_km_filter(to_send, search)
+        to_send += await scraper.enrich_with_km(price_changed[:10])
+
+        logger.info(f"Poll {sid}: {len(matching)} matching, {len(new)} new, {len(price_changed)} price changes → {len(to_send)} sent")
+        for listing in to_send:
+            await send_listing(bot, int(chat_id), listing, search["name"])
+
+
 async def poll_all_searches(context: ContextTypes.DEFAULT_TYPE):
     global _poll_sem
     if _poll_sem is None:
-        _poll_sem = asyncio.Semaphore(3)
+        _poll_sem = asyncio.Semaphore(5)  # 5 concurrent manufacturer fetches
 
     logger.info("⏱ Running scheduled poll...")
     try:
         all_searches = await asyncio.to_thread(sb.get_all_searches)
-        logger.info(f"Poll: {len(all_searches)} search(es) to check")
 
-        async def _process_one(chat_id: str, s: dict):
+        # Group by manufacturer — one yad2 fetch per manufacturer, fan out to all matching searches
+        by_mfr: dict[str, list[tuple[str, dict]]] = defaultdict(list)
+        no_mfr: list[tuple[str, dict]] = []
+        for chat_id, s in all_searches:
+            mfr = (s.get("manufacturer") or "").strip()
+            if mfr:
+                by_mfr[mfr].append((chat_id, s))
+            else:
+                no_mfr.append((chat_id, s))
+
+        logger.info(f"Poll: {len(all_searches)} searches, {len(by_mfr)} unique manufacturers, {len(no_mfr)} no-manufacturer")
+
+        async def process_manufacturer(mfr: str, group: list[tuple[str, dict]]):
+            async with _poll_sem:
+                listings = await scraper.fetch_listings({"manufacturer": mfr})
+            if not listings:
+                return
+            for chat_id, s in group:
+                try:
+                    await _process_search_with_listings(context.bot, chat_id, s, listings)
+                except Exception as e:
+                    logger.error(f"Search {s.get('id')} for {chat_id}: {e}",
+                                 exc_info=(type(e), e, e.__traceback__))
+
+        async def process_no_mfr(chat_id: str, s: dict):
             async with _poll_sem:
                 new_listings = await _fetch_new(s)
             for listing in new_listings:
                 await send_listing(context.bot, int(chat_id), listing, s["name"])
-                logger.info(f"Sent listing {listing['id']} to {chat_id}")
+                logger.info(f"Sent {listing['id']} to {chat_id}")
 
-        tasks = [_process_one(chat_id, s) for chat_id, s in all_searches]
+        tasks = (
+            [process_manufacturer(mfr, group) for mfr, group in by_mfr.items()] +
+            [process_no_mfr(chat_id, s) for chat_id, s in no_mfr]
+        )
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        for (chat_id, s), res in zip(all_searches, results):
+        for i, res in enumerate(results):
             if isinstance(res, Exception):
-                logger.error(
-                    f"Error polling search {s.get('id')} for {chat_id}: {res}",
-                    exc_info=(type(res), res, res.__traceback__),
-                )
+                logger.error(f"Poll task {i} failed: {res}",
+                             exc_info=(type(res), res, res.__traceback__))
 
-        # Remove locks for searches that no longer exist to prevent unbounded growth
         active_ids = {s["id"] for _, s in all_searches}
         for sid in list(_fetch_locks.keys()):
             if sid not in active_ids:
                 del _fetch_locks[sid]
+
     except Exception as e:
         logger.error(f"poll_all_searches crashed: {e}", exc_info=True)
 

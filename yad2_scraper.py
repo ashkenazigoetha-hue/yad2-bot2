@@ -302,33 +302,53 @@ class Yad2Scraper:
         return params
 
     def _matches_search(self, listing: dict, search: dict) -> bool:
-        """Client-side model and sub_model match (substring, case-insensitive)."""
-        # str() guards against int values stored in Supabase
+        """Client-side full filter: model, sub_model, price, year. km is checked separately after enrichment."""
         wanted_model = str(search.get("model") or "").strip()
         wanted_sub = str(search.get("sub_model") or "").strip()
 
-        if wanted_model:
-            # Numeric ID → yad2 already filtered server-side, trust it
-            if not wanted_model.isdigit():
-                normalized = self._normalize_model(wanted_model)
-                listing_model = str(listing.get("model_text") or "").strip()
-                wl = wanted_model.lower()
-                nl = normalized.lower()
-                ll = listing_model.lower()
+        if wanted_model and not wanted_model.isdigit():
+            normalized = self._normalize_model(wanted_model)
+            listing_model = str(listing.get("model_text") or "").strip()
+            wl = wanted_model.lower()
+            nl = normalized.lower()
+            ll = listing_model.lower()
 
-                def _word_match(pattern: str, text: str) -> bool:
-                    return bool(re.search(r'(?<!\w)' + re.escape(pattern) + r'(?!\w)', text, re.IGNORECASE))
+            def _word_match(pattern: str, text: str) -> bool:
+                return bool(re.search(r'(?<!\w)' + re.escape(pattern) + r'(?!\w)', text, re.IGNORECASE))
 
-                if not (_word_match(wl, ll) or _word_match(ll, wl) or _word_match(nl, ll) or _word_match(ll, nl)):
+            if not (_word_match(wl, ll) or _word_match(ll, wl) or _word_match(nl, ll) or _word_match(ll, nl)):
+                return False
+
+        if wanted_sub and not wanted_sub.isdigit():
+            listing_trim = str(listing.get("trim") or "").strip().lower()
+            for token in wanted_sub.lower().split():
+                synonyms = SUBMODEL_SYNONYMS.get(token, [token])
+                if not any(syn in listing_trim for syn in synonyms):
                     return False
 
-        if wanted_sub:
-            if not wanted_sub.isdigit():
-                listing_trim = str(listing.get("trim") or "").strip().lower()
-                for token in wanted_sub.lower().split():
-                    synonyms = SUBMODEL_SYNONYMS.get(token, [token])
-                    if not any(syn in listing_trim for syn in synonyms):
-                        return False
+        # Price range
+        price = listing.get("price")
+        if price is not None:
+            try:
+                p = int(price)
+                if search.get("price_min") and p < int(search["price_min"]):
+                    return False
+                if search.get("price_max") and p > int(search["price_max"]):
+                    return False
+            except (ValueError, TypeError):
+                pass
+
+        # Year range
+        year = listing.get("year")
+        if year is not None:
+            try:
+                y = int(year)
+                if search.get("year_min") and y < int(search["year_min"]):
+                    return False
+                if search.get("year_max") and y > int(search["year_max"]):
+                    return False
+            except (ValueError, TypeError):
+                pass
 
         return True
 
