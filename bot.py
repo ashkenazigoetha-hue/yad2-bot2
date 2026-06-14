@@ -380,8 +380,20 @@ async def _process_search_with_listings(bot, chat_id: str, search: dict, all_lis
                 await send_listing(bot, int(chat_id), listing, search["name"], is_welcome=True)
             return
 
-        # _is_recent guard prevents boosted stale listings from re-firing as "new"
-        new = [l for l in matching if l["id"] not in seen and scraper._is_recent(l.get("listing_date"))]
+        # Unseen listings from the last 7 days (the full recency window)
+        unseen_7d = [l for l in matching if l["id"] not in seen and scraper._is_recent(l.get("listing_date"))]
+
+        # For steady-state "new" alerts, only send listings from the last 48 hours.
+        # Older unseen listings exist because seeding was incomplete (e.g. old bot bug,
+        # URL mismatch between welcome fetch and manufacturer fetch). We mark them seen
+        # silently so they stop appearing, but don't send them as "מודעה חדשה!".
+        def _is_48h(date_val) -> bool:
+            dt = scraper._parse_listing_date(date_val)
+            if dt is None:
+                return True  # no date → assume new
+            return (datetime.utcnow() - dt).total_seconds() < 48 * 3600
+
+        new = [l for l in unseen_7d if _is_48h(l.get("listing_date"))]
 
         price_changed = []
         for l in matching:
@@ -399,13 +411,15 @@ async def _process_search_with_listings(bot, chat_id: str, search: dict, all_lis
         price_enriched = _apply_km_filter(price_raw, search)
         to_send = new_enriched + price_enriched
 
+        # Mark: enriched listings + all unseen_7d (absorbs the 2-7 day gap silently)
+        ids_to_mark = list({l["id"] for l in unseen_7d} | {l["id"] for l in new_raw + price_raw})
         await asyncio.to_thread(
             sb.mark_seen, sid,
-            [l["id"] for l in new_raw + price_raw], seen_ids_list,
+            ids_to_mark, seen_ids_list,
             price_map, seen_prices,
         )
 
-        logger.info(f"Poll {sid}: {len(matching)} matching, {len(new)} new (recent), {len(price_changed)} price changes → {len(to_send)} sent")
+        logger.info(f"Poll {sid}: {len(matching)} matching, {len(unseen_7d)} unseen (7d), {len(new)} new (48h), {len(price_changed)} price changes → {len(to_send)} sent")
         for listing in to_send:
             await send_listing(bot, int(chat_id), listing, search["name"])
 
