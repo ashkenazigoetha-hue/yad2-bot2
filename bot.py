@@ -15,6 +15,7 @@ from datetime import datetime
 from typing import Optional
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import Conflict
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -724,6 +725,15 @@ async def debug_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"שגיאה: {e}")
 
 
+# ── Error handling ────────────────────────────────────────────────────────────
+
+async def _error_handler(update, context: ContextTypes.DEFAULT_TYPE):
+    if isinstance(context.error, Conflict):
+        logger.warning("409 Conflict: another getUpdates session active — will retry automatically")
+        return
+    logger.error(f"Unhandled error: {context.error}", exc_info=context.error)
+
+
 # ── post_init & main ──────────────────────────────────────────────────────────
 
 async def _post_init(application):
@@ -759,6 +769,7 @@ def main():
     app.add_handler(CallbackQueryHandler(check_single, pattern="^chk_"))
     app.add_handler(CallbackQueryHandler(back_to_list, pattern="^back_to_list$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_email))
+    app.add_error_handler(_error_handler)
 
     interval = config.POLL_INTERVAL_MINUTES * 60
     app.job_queue.run_repeating(poll_all_searches, interval=interval, first=30)
