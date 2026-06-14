@@ -496,7 +496,7 @@ class Yad2Scraper:
             listings = []
             for cat in ['private', 'commercial', 'boost', 'platinum', 'solo']:
                 for item in data.get(cat, []):
-                    parsed = self._parse_item(item)
+                    parsed = self._parse_item(item, category=cat)
                     if parsed:
                         listings.append(parsed)
 
@@ -507,7 +507,7 @@ class Yad2Scraper:
             logger.error(f"_parse_page error: {e}", exc_info=True)
             return []
 
-    def _parse_item(self, item: dict) -> Optional[dict]:
+    def _parse_item(self, item: dict, category: str = "") -> Optional[dict]:
         try:
             token = item.get("token", "")
             order_id = item.get("orderId") or item.get("id") or item.get("adId")
@@ -585,9 +585,14 @@ class Yad2Scraper:
             hand_num  = hand_obj.get("id") if isinstance(hand_obj, dict) else hand_obj
             hand_text = hand_obj.get("text", "") if isinstance(hand_obj, dict) else ""
 
-            # adType: "private" = פרטי, "commercial" = עוסק/דילר
-            ad_type   = item.get("adType", "")
-            ownership = "סוכנות" if ad_type == "commercial" else "פרטית" if ad_type == "private" else ""
+            # Category from the feed bucket is authoritative; fall back to adType field
+            if category in ("private",):
+                ownership = "פרטית"
+            elif category in ("commercial",):
+                ownership = "סוכנות"
+            else:
+                ad_type = item.get("adType", "")
+                ownership = "סוכנות" if ad_type == "commercial" else "פרטית" if ad_type == "private" else ""
 
             # Engine: engineVolume (cc), engineType.text ("בנזין"/"דיזל"/"חשמלי"…)
             engine_cc = item.get("engineVolume")
