@@ -391,15 +391,17 @@ async def _process_search_with_listings(bot, chat_id: str, search: dict, all_lis
                     l["_price_change"] = {"old": old_price, "new": l["price"]}
                     price_changed.append(l)
 
-        # Enrich and filter BEFORE marking seen — if enrich fails, listings retry next poll
-        new_enriched = _apply_km_filter(await scraper.enrich_with_km(new[:15]), search)
-        price_enriched = _apply_km_filter(await scraper.enrich_with_km(price_changed[:10]), search)
+        # Enrich first, then km-filter. Mark ALL enriched IDs as seen (including km-filtered
+        # ones) so they aren't re-enriched every poll when they never pass the km limit.
+        new_raw = await scraper.enrich_with_km(new[:15])
+        price_raw = await scraper.enrich_with_km(price_changed[:10])
+        new_enriched = _apply_km_filter(new_raw, search)
+        price_enriched = _apply_km_filter(price_raw, search)
         to_send = new_enriched + price_enriched
 
-        # Mark only what we send as seen_ids; pass full price_map so all prices stay tracked
         await asyncio.to_thread(
             sb.mark_seen, sid,
-            [l["id"] for l in to_send], seen_ids_list,
+            [l["id"] for l in new_raw + price_raw], seen_ids_list,
             price_map, seen_prices,
         )
 
