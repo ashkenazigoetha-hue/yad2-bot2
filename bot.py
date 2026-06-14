@@ -341,7 +341,8 @@ async def _process_search_with_listings(bot, chat_id: str, search: dict, all_lis
         is_first_run = len(seen) == 0
 
         # Client-side filter: model, sub_model, price, year (km after enrich)
-        matching = [l for l in all_listings if scraper._matches_search(l, search)]
+        # Use dict() copies — enrich_with_km mutates in-place and all_listings is shared
+        matching = [dict(l) for l in all_listings if scraper._matches_search(l, search)]
 
         # Persist seen state for all matching listings in one DB call
         price_map = {l["id"]: l["price"] for l in matching if l.get("price") is not None}
@@ -369,13 +370,11 @@ async def _process_search_with_listings(bot, chat_id: str, search: dict, all_lis
             if l["id"] in seen and l.get("price") is not None:
                 old_price = seen_prices.get(l["id"])
                 if old_price is not None and l["price"] != old_price:
-                    lc = dict(l)
-                    lc["_price_change"] = {"old": old_price, "new": l["price"]}
-                    price_changed.append(lc)
+                    l["_price_change"] = {"old": old_price, "new": l["price"]}
+                    price_changed.append(l)
 
-        to_send = await scraper.enrich_with_km(new[:15])
-        to_send = _apply_km_filter(to_send, search)
-        to_send += await scraper.enrich_with_km(price_changed[:10])
+        to_send = _apply_km_filter(await scraper.enrich_with_km(new[:15]), search)
+        to_send += _apply_km_filter(await scraper.enrich_with_km(price_changed[:10]), search)
 
         logger.info(f"Poll {sid}: {len(matching)} matching, {len(new)} new, {len(price_changed)} price changes → {len(to_send)} sent")
         for listing in to_send:
@@ -408,12 +407,16 @@ async def poll_all_searches(context: ContextTypes.DEFAULT_TYPE):
                 listings = await scraper.fetch_listings({"manufacturer": mfr})
             if not listings:
                 return
-            for chat_id, s in group:
-                try:
-                    await _process_search_with_listings(context.bot, chat_id, s, listings)
-                except Exception as e:
-                    logger.error(f"Search {s.get('id')} for {chat_id}: {e}",
-                                 exc_info=(type(e), e, e.__traceback__))
+            # Process all searches for this manufacturer in parallel — each has its own Lock
+            search_results = await asyncio.gather(
+                *[_process_search_with_listings(context.bot, chat_id, s, listings)
+                  for chat_id, s in group],
+                return_exceptions=True,
+            )
+            for (chat_id, s), res in zip(group, search_results):
+                if isinstance(res, Exception):
+                    logger.error(f"Search {s.get('id')} for {chat_id}: {res}",
+                                 exc_info=(type(res), res, res.__traceback__))
 
         async def process_no_mfr(chat_id: str, s: dict):
             async with _poll_sem:
