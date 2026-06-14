@@ -364,6 +364,15 @@ async def _process_search_with_listings(bot, chat_id: str, search: dict, all_lis
                     price_map, seen_prices,
                 )
             logger.info(f"First run {sid}: {len(matching)} matching, {len(fresh)} recent → {len(to_send)} sent")
+            if to_send:
+                try:
+                    await bot.send_message(
+                        int(chat_id),
+                        f"🚗 *{search['name']}* — {len(to_send)} מודעות עדכניות:",
+                        parse_mode="Markdown",
+                    )
+                except Exception:
+                    pass
             for listing in to_send:
                 await send_listing(bot, int(chat_id), listing, search["name"])
             return
@@ -745,20 +754,22 @@ async def debug_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ── Welcome batch for new searches (runs every 60s) ──────────────────────────
 
 async def welcome_new_searches(context: ContextTypes.DEFAULT_TYPE):
-    """Send the initial 10 listings for any search that has never been polled.
-    Also refreshes _active_search_ids so poll_all_searches skips deleted searches within 60s."""
+    """Welcome batch for new searches + deletion detection (runs every 60s).
+
+    Uses the same manufacturer-based fetch as poll_all_searches so that seeding
+    covers the full result set. This prevents poll_all_searches (running 20s later)
+    from finding the same listings again as 'new' due to URL mismatch.
+    """
     global _active_search_ids
     try:
         all_searches = await asyncio.to_thread(sb.get_all_searches)
         current_ids = {s["id"] for _, s in all_searches}
 
-        # Detect and log any searches that just disappeared (deleted on the website)
         removed = _active_search_ids - current_ids
         if removed:
             logger.info(f"Detected {len(removed)} deleted search(es): {removed}")
             for sid in removed:
                 _fetch_locks.pop(sid, None)
-
         _active_search_ids = current_ids
 
         new_searches = [
@@ -768,7 +779,37 @@ async def welcome_new_searches(context: ContextTypes.DEFAULT_TYPE):
         if not new_searches:
             return
         logger.info(f"welcome_new_searches: {len(new_searches)} new search(es) found")
+
+        # Group by manufacturer — same pattern as poll_all_searches so seeding is consistent
+        by_mfr: dict[str, list[tuple[str, dict]]] = defaultdict(list)
+        no_mfr: list[tuple[str, dict]] = []
         for chat_id, s in new_searches:
+            mfr = (s.get("manufacturer") or "").strip()
+            if mfr:
+                by_mfr[mfr].append((chat_id, s))
+            else:
+                no_mfr.append((chat_id, s))
+
+        # Manufacturer searches: fetch once, fan out via _process_search_with_listings
+        # (its first-run path seeds ALL matching and sends the welcome header)
+        for mfr, group in by_mfr.items():
+            try:
+                listings = await scraper.fetch_listings({"manufacturer": mfr})
+                if not listings:
+                    continue
+                results = await asyncio.gather(
+                    *[_process_search_with_listings(context.bot, chat_id, s, listings)
+                      for chat_id, s in group],
+                    return_exceptions=True,
+                )
+                for (chat_id, s), res in zip(group, results):
+                    if isinstance(res, Exception):
+                        logger.error(f"welcome {s.get('id')} for {chat_id}: {res}", exc_info=(type(res), res, res.__traceback__))
+            except Exception as e:
+                logger.error(f"welcome_new_searches mfr={mfr}: {e}", exc_info=True)
+
+        # No-manufacturer searches: use _fetch_new (search-specific URL is fine here)
+        for chat_id, s in no_mfr:
             try:
                 listings = await _fetch_new(s)
                 if listings:
