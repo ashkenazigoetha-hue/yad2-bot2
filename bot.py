@@ -735,6 +735,36 @@ async def debug_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"שגיאה: {e}")
 
 
+# ── Welcome batch for new searches (runs every 60s) ──────────────────────────
+
+async def welcome_new_searches(context: ContextTypes.DEFAULT_TYPE):
+    """Send the initial 10 listings for any search that has never been polled."""
+    try:
+        all_searches = await asyncio.to_thread(sb.get_all_searches)
+        new_searches = [
+            (chat_id, s) for chat_id, s in all_searches
+            if not (s.get("seen_ids") or [])
+        ]
+        if not new_searches:
+            return
+        logger.info(f"welcome_new_searches: {len(new_searches)} new search(es) found")
+        for chat_id, s in new_searches:
+            try:
+                listings = await _fetch_new(s)
+                if listings:
+                    await context.bot.send_message(
+                        int(chat_id),
+                        f"🚗 *{s['name']}* — {len(listings)} מודעות עדכניות:",
+                        parse_mode="Markdown",
+                    )
+                for listing in listings:
+                    await send_listing(context.bot, int(chat_id), listing, s["name"])
+            except Exception as e:
+                logger.error(f"welcome_new_searches {s.get('id')}: {e}", exc_info=True)
+    except Exception as e:
+        logger.error(f"welcome_new_searches crashed: {e}", exc_info=True)
+
+
 # ── Error handling ────────────────────────────────────────────────────────────
 
 async def _error_handler(update, context: ContextTypes.DEFAULT_TYPE):
@@ -783,6 +813,7 @@ def main():
 
     interval = config.POLL_INTERVAL_MINUTES * 60
     app.job_queue.run_repeating(poll_all_searches, interval=interval, first=30)
+    app.job_queue.run_repeating(welcome_new_searches, interval=60, first=10)
 
     logger.info(f"🚀 Bot started! Polling every {config.POLL_INTERVAL_MINUTES} minutes.")
     app.run_polling(drop_pending_updates=True)
