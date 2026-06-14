@@ -337,6 +337,9 @@ def _apply_km_filter(listings: list, search: dict) -> list:
 async def _process_search_with_listings(bot, chat_id: str, search: dict, all_listings: list):
     """Match pre-fetched manufacturer listings against one search, send new/price-changed."""
     sid = search["id"]
+    if _active_search_ids and sid not in _active_search_ids:
+        logger.info(f"Search {sid} was deleted — skipping")
+        return
     async with _fetch_locks.setdefault(sid, asyncio.Lock()):
         seen_ids_list, seen_prices = await asyncio.to_thread(sb.get_seen_state, sid)
         seen = set(seen_ids_list)
@@ -431,6 +434,9 @@ async def poll_all_searches(context: ContextTypes.DEFAULT_TYPE):
                                  exc_info=(type(res), res, res.__traceback__))
 
         async def process_no_mfr(chat_id: str, s: dict):
+            if _active_search_ids and s["id"] not in _active_search_ids:
+                logger.info(f"Search {s['id']} was deleted — skipping")
+                return
             async with _poll_sem:
                 new_listings = await _fetch_new(s)
             for listing in new_listings:
@@ -459,6 +465,7 @@ async def poll_all_searches(context: ContextTypes.DEFAULT_TYPE):
 # ── Fetch helper (replaces scraper.fetch_new_listings) ────────────────────────
 
 _fetch_locks: dict[str, asyncio.Lock] = {}
+_active_search_ids: set[str] = set()  # refreshed every 60s by welcome_new_searches
 
 
 async def _fetch_new(search: dict) -> list:
@@ -738,9 +745,22 @@ async def debug_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ── Welcome batch for new searches (runs every 60s) ──────────────────────────
 
 async def welcome_new_searches(context: ContextTypes.DEFAULT_TYPE):
-    """Send the initial 10 listings for any search that has never been polled."""
+    """Send the initial 10 listings for any search that has never been polled.
+    Also refreshes _active_search_ids so poll_all_searches skips deleted searches within 60s."""
+    global _active_search_ids
     try:
         all_searches = await asyncio.to_thread(sb.get_all_searches)
+        current_ids = {s["id"] for _, s in all_searches}
+
+        # Detect and log any searches that just disappeared (deleted on the website)
+        removed = _active_search_ids - current_ids
+        if removed:
+            logger.info(f"Detected {len(removed)} deleted search(es): {removed}")
+            for sid in removed:
+                _fetch_locks.pop(sid, None)
+
+        _active_search_ids = current_ids
+
         new_searches = [
             (chat_id, s) for chat_id, s in all_searches
             if not (s.get("seen_ids") or [])
