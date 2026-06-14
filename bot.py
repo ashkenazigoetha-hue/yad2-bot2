@@ -354,8 +354,11 @@ async def _process_search_with_listings(bot, chat_id: str, search: dict, all_lis
 
         if is_first_run:
             fresh = [l for l in matching if scraper._is_recent(l.get("listing_date"))]
+            # Pick the 10 most recent, then reverse so we send oldest → newest
             fresh.sort(key=lambda l: scraper._parse_listing_date(l.get("listing_date")) or datetime.min, reverse=True)
-            to_send = _apply_km_filter(await scraper.enrich_with_km(fresh[:10]), search)
+            top10 = fresh[:10]
+            to_send = _apply_km_filter(await scraper.enrich_with_km(top10), search)
+            to_send.sort(key=lambda l: scraper._parse_listing_date(l.get("listing_date")) or datetime.min)
             # Seed baseline: mark ALL matching seen so next poll doesn't re-send them
             if matching:
                 await asyncio.to_thread(
@@ -368,13 +371,13 @@ async def _process_search_with_listings(bot, chat_id: str, search: dict, all_lis
                 try:
                     await bot.send_message(
                         int(chat_id),
-                        f"🚗 *{search['name']}* — {len(to_send)} מודעות עדכניות:",
+                        f"📋 *{search['name']}* — {len(to_send)} מודעות אחרונות מהשבוע:",
                         parse_mode="Markdown",
                     )
                 except Exception:
                     pass
             for listing in to_send:
-                await send_listing(bot, int(chat_id), listing, search["name"])
+                await send_listing(bot, int(chat_id), listing, search["name"], is_welcome=True)
             return
 
         # _is_recent guard prevents boosted stale listings from re-firing as "new"
@@ -525,7 +528,7 @@ async def _fetch_new(search: dict) -> list:
 
 # ── send_listing ──────────────────────────────────────────────────────────────
 
-async def send_listing(bot, chat_id: int, listing: dict, search_name: str):
+async def send_listing(bot, chat_id: int, listing: dict, search_name: str, is_welcome: bool = False):
     title       = listing.get("title") or "רכב"
     trim        = listing.get("trim") or ""
     price       = listing.get("price")
@@ -568,8 +571,15 @@ async def send_listing(bot, chat_id: int, listing: dict, search_name: str):
     else:
         price_header = None
 
+    if price_change:
+        listing_header = "🔄 *עודכן מחיר!*"
+    elif is_welcome:
+        listing_header = "📋 *מודעה אחרונה*"
+    else:
+        listing_header = "🚗 *מודעה חדשה!*"
+
     lines = [
-        "🔄 *עודכן מחיר!*" if price_change else "🚗 *מודעה חדשה נמצאה!* 🚗",
+        listing_header,
         header,
         f"🔹 שנה: {year}",
         f"🔹 יד: {_safe(hand_text)}",
@@ -812,14 +822,16 @@ async def welcome_new_searches(context: ContextTypes.DEFAULT_TYPE):
         for chat_id, s in no_mfr:
             try:
                 listings = await _fetch_new(s)
+                # Sort oldest→newest so the most recent listing lands last
+                listings.sort(key=lambda l: scraper._parse_listing_date(l.get("listing_date")) or datetime.min)
                 if listings:
                     await context.bot.send_message(
                         int(chat_id),
-                        f"🚗 *{s['name']}* — {len(listings)} מודעות עדכניות:",
+                        f"📋 *{s['name']}* — {len(listings)} מודעות אחרונות מהשבוע:",
                         parse_mode="Markdown",
                     )
                 for listing in listings:
-                    await send_listing(context.bot, int(chat_id), listing, s["name"])
+                    await send_listing(context.bot, int(chat_id), listing, s["name"], is_welcome=True)
             except Exception as e:
                 logger.error(f"welcome_new_searches {s.get('id')}: {e}", exc_info=True)
     except Exception as e:
