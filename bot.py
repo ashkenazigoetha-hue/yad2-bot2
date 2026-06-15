@@ -442,10 +442,24 @@ async def poll_all_searches(context: ContextTypes.DEFAULT_TYPE):
             if _active_search_ids is not None and s["id"] not in _active_search_ids:
                 logger.info(f"Search {s['id']} was deleted — skipping")
                 return
+            is_first = s.get("seen_ids") is None
             async with _poll_sem:
                 new_listings = await _fetch_new(s)
+            if not new_listings:
+                return
+            if is_first:
+                # Sort oldest→newest so the most recent listing lands last
+                new_listings.sort(key=lambda l: scraper._parse_listing_date(l.get("listing_date")) or datetime.min)
+                try:
+                    await context.bot.send_message(
+                        int(chat_id),
+                        f"📋 *{s['name']}* — {len(new_listings)} מודעות אחרונות מהשבוע:",
+                        parse_mode="Markdown",
+                    )
+                except Exception:
+                    pass
             for listing in new_listings:
-                await send_listing(context.bot, int(chat_id), listing, s["name"])
+                await send_listing(context.bot, int(chat_id), listing, s["name"], is_welcome=is_first)
                 logger.info(f"Sent {listing['id']} to {chat_id}")
 
         results = await asyncio.gather(
