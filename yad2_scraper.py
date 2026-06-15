@@ -352,8 +352,9 @@ class Yad2Scraper:
 
         return True
 
-    async def _fetch_item_km(self, token: str) -> Optional[int]:
-        """Fetch km for a single listing by loading its detail page."""
+    async def _fetch_item_details(self, token: str) -> dict:
+        """Fetch km, ownership and contact info from the listing detail page."""
+        result = {}
         try:
             session = await self._get_session()
             r = await session.get(
@@ -363,22 +364,39 @@ class Yad2Scraper:
                 timeout=12,
             )
             if r.status_code != 200:
-                return None
+                return result
             nd = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', r.text, re.DOTALL)
             if not nd:
-                return None
+                return result
             data = json.loads(nd.group(1))
             queries = (data.get("props", {}).get("pageProps", {})
                        .get("dehydratedState", {}).get("queries", []))
             for q in queries:
                 if q.get("queryKey", [None])[0] == "vehicles":
-                    return q["state"]["data"].get("km")
+                    vd = q["state"]["data"]
+                    if vd.get("km") is not None:
+                        result["km"] = vd["km"]
+                    # adType on the detail page is the authoritative source for ownership
+                    ad_type = str(vd.get("adType") or "").lower()
+                    if "private" in ad_type or "פרטי" in ad_type:
+                        result["ownership"] = "פרטית"
+                    elif "commercial" in ad_type or "מסחרי" in ad_type or "dealer" in ad_type:
+                        result["ownership"] = "סוכנות"
+                    # Contact info
+                    contact = vd.get("contactInfo") or vd.get("contact") or {}
+                    name = (contact.get("name") or vd.get("contactName") or "").strip()
+                    phone = (contact.get("phone") or vd.get("contactPhone") or vd.get("phone") or "").strip()
+                    if name:
+                        result["contact_name"] = name
+                    if phone:
+                        result["contact_phone"] = phone
+                    break
         except Exception as e:
-            logger.debug(f"_fetch_item_km {token}: {e}")
-        return None
+            logger.debug(f"_fetch_item_details {token}: {e}")
+        return result
 
     async def enrich_with_km(self, listings: list[dict]) -> list[dict]:
-        """Fetch km for each listing, max 3 concurrent to avoid rate-limiting."""
+        """Fetch km, ownership and contact info for each listing (max 3 concurrent)."""
         import asyncio as _asyncio
         if not listings:
             return listings
@@ -386,15 +404,24 @@ class Yad2Scraper:
 
         async def _limited(token: str):
             async with sem:
-                return await self._fetch_item_km(token)
+                return await self._fetch_item_details(token)
 
-        km_values = await _asyncio.gather(
+        details_list = await _asyncio.gather(
             *[_limited(l["id"]) for l in listings],
             return_exceptions=True,
         )
-        for listing, km in zip(listings, km_values):
-            if isinstance(km, int):
-                listing["km"] = km
+        for listing, details in zip(listings, details_list):
+            if isinstance(details, Exception) or not isinstance(details, dict):
+                continue
+            if "km" in details:
+                listing["km"] = details["km"]
+            # Detail page adType is authoritative — always overrides the feed-level guess
+            if details.get("ownership"):
+                listing["ownership"] = details["ownership"]
+            if details.get("contact_name"):
+                listing["contact_name"] = details["contact_name"]
+            if details.get("contact_phone"):
+                listing["contact_phone"] = details["contact_phone"]
         return listings
 
     async def _fetch_url(self, url: str) -> list[dict]:

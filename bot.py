@@ -86,11 +86,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Send up to 10 current listings for each search immediately
         for s in searches:
             try:
+                is_first = s.get("seen_ids") is None
                 new_listings = await _fetch_new(s)
                 if new_listings:
                     await update.message.reply_text(f"🚗 *{s['name']}* — {len(new_listings)} מודעות עכשיו:", parse_mode="Markdown")
                     for listing in new_listings:
-                        await send_listing(context.bot, int(chat_id), listing, s["name"])
+                        await send_listing(context.bot, int(chat_id), listing, s["name"], is_welcome=is_first)
             except Exception as e:
                 logger.error(f"start fetch error for {s.get('id')}: {e}")
     else:
@@ -168,6 +169,7 @@ async def handle_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Send 10 most recent listings immediately after linking
     for s in searches:
+        is_first = s.get("seen_ids") is None
         new_listings = await _fetch_new(s)
         if new_listings:
             await update.message.reply_text(
@@ -175,7 +177,7 @@ async def handle_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown",
             )
             for listing in new_listings:
-                await send_listing(context.bot, int(chat_id), listing, s["name"])
+                await send_listing(context.bot, int(chat_id), listing, s["name"], is_welcome=is_first)
 
 
 # ── /my_searches ──────────────────────────────────────────────────────────────
@@ -262,10 +264,11 @@ async def check_single(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await query.edit_message_text(f"🔄 בודק את *{s['name']}*...", parse_mode="Markdown")
+    is_first = s.get("seen_ids") is None
     new_listings = await _fetch_new(s)
     if new_listings:
         for listing in new_listings:
-            await send_listing(context.bot, int(chat_id), listing, s["name"])
+            await send_listing(context.bot, int(chat_id), listing, s["name"], is_welcome=is_first)
         await context.bot.send_message(int(chat_id), f"✅ נמצאו {len(new_listings)} מודעות חדשות!")
     else:
         await context.bot.send_message(int(chat_id), "😴 אין מודעות חדשות כרגע.")
@@ -306,9 +309,10 @@ async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total = 0
     for s in searches:
         try:
+            is_first = s.get("seen_ids") is None
             new_listings = await _fetch_new(s)
             for listing in new_listings[:15]:
-                await send_listing(context.bot, int(chat_id), listing, s["name"])
+                await send_listing(context.bot, int(chat_id), listing, s["name"], is_welcome=is_first)
                 total += 1
             if not new_listings:
                 await update.message.reply_text(f"😴 *{s['name']}* – אין מודעות חדשות.", parse_mode="Markdown")
@@ -337,13 +341,13 @@ def _apply_km_filter(listings: list, search: dict) -> list:
 async def _process_search_with_listings(bot, chat_id: str, search: dict, all_listings: list):
     """Match pre-fetched manufacturer listings against one search, send new/price-changed."""
     sid = search["id"]
-    if _active_search_ids and sid not in _active_search_ids:
+    if _active_search_ids is not None and sid not in _active_search_ids:
         logger.info(f"Search {sid} was deleted — skipping")
         return
     async with _fetch_locks.setdefault(sid, asyncio.Lock()):
         seen_ids_list, seen_prices = await asyncio.to_thread(sb.get_seen_state, sid)
-        seen = set(seen_ids_list)
-        is_first_run = len(seen) == 0
+        is_first_run = seen_ids_list is None
+        seen = set(seen_ids_list or [])
 
         # Client-side filter: model, sub_model, price, year (km after enrich)
         # Use dict() copies — enrich_with_km mutates in-place and all_listings is shared
@@ -359,13 +363,13 @@ async def _process_search_with_listings(bot, chat_id: str, search: dict, all_lis
             top10 = fresh[:10]
             to_send = _apply_km_filter(await scraper.enrich_with_km(top10), search)
             to_send.sort(key=lambda l: scraper._parse_listing_date(l.get("listing_date")) or datetime.min)
-            # Seed baseline: mark ALL matching seen so next poll doesn't re-send them
-            if matching:
-                await asyncio.to_thread(
-                    sb.mark_seen, sid,
-                    [l["id"] for l in matching], seen_ids_list,
-                    price_map, seen_prices,
-                )
+            # Seed baseline even if empty, so welcome loop doesn't repeat for zero-result searches
+            await asyncio.to_thread(
+                sb.mark_seen, sid,
+                [l["id"] for l in matching], seen_ids_list or [],
+                price_map if matching else None, seen_prices,
+                True,  # force_write
+            )
             logger.info(f"First run {sid}: {len(matching)} matching, {len(fresh)} recent → {len(to_send)} sent")
             if to_send:
                 try:
@@ -462,7 +466,7 @@ async def poll_all_searches(context: ContextTypes.DEFAULT_TYPE):
                                  exc_info=(type(res), res, res.__traceback__))
 
         async def process_no_mfr(chat_id: str, s: dict):
-            if _active_search_ids and s["id"] not in _active_search_ids:
+            if _active_search_ids is not None and s["id"] not in _active_search_ids:
                 logger.info(f"Search {s['id']} was deleted — skipping")
                 return
             async with _poll_sem:
@@ -493,7 +497,7 @@ async def poll_all_searches(context: ContextTypes.DEFAULT_TYPE):
 # ── Fetch helper (replaces scraper.fetch_new_listings) ────────────────────────
 
 _fetch_locks: dict[str, asyncio.Lock] = {}
-_active_search_ids: set[str] = set()  # refreshed every 60s by welcome_new_searches
+_active_search_ids: Optional[set[str]] = None  # None until first successful fetch
 
 
 async def _fetch_new(search: dict) -> list:
@@ -501,20 +505,28 @@ async def _fetch_new(search: dict) -> list:
     sid = search["id"]
     async with _fetch_locks.setdefault(sid, asyncio.Lock()):
         seen_ids_list, seen_prices = await asyncio.to_thread(sb.get_seen_state, sid)
-        seen = set(seen_ids_list)
-        is_first_run = len(seen) == 0
+        is_first_run = seen_ids_list is None
+        seen = set(seen_ids_list or [])
 
         listings = await scraper.fetch_listings(search, seen_ids=seen)
 
         # Build price map for all fetched listings that have a price
         price_map = {l["id"]: l["price"] for l in listings if l.get("price") is not None}
 
-        # Mark ALL fetched IDs as seen and persist updated prices in one DB call
+        # Mark ALL fetched IDs as seen. On first run, always write (even if empty)
+        # so zero-result searches don't loop in welcome_new_searches forever.
         if listings:
             await asyncio.to_thread(
                 sb.mark_seen, sid,
-                [l["id"] for l in listings], seen_ids_list,
+                [l["id"] for l in listings], seen_ids_list or [],
                 price_map, seen_prices,
+            )
+        elif is_first_run:
+            await asyncio.to_thread(
+                sb.mark_seen, sid,
+                [], seen_ids_list or [],
+                None, seen_prices,
+                True,  # force_write
             )
 
         if is_first_run:
@@ -696,7 +708,7 @@ async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"{SUPABASE_URL}/rest/v1/searches",
                 headers=_headers(),
                 params={"id": f"eq.{s['id']}"},
-                json={"seen_ids": []},
+                json={"seen_ids": None},
                 timeout=10,
             )
 
@@ -791,7 +803,7 @@ async def welcome_new_searches(context: ContextTypes.DEFAULT_TYPE):
         all_searches = await asyncio.to_thread(sb.get_all_searches)
         current_ids = {s["id"] for _, s in all_searches}
 
-        removed = _active_search_ids - current_ids
+        removed = (_active_search_ids - current_ids) if _active_search_ids is not None else set()
         if removed:
             logger.info(f"Detected {len(removed)} deleted search(es): {removed}")
             for sid in removed:
@@ -800,7 +812,7 @@ async def welcome_new_searches(context: ContextTypes.DEFAULT_TYPE):
 
         new_searches = [
             (chat_id, s) for chat_id, s in all_searches
-            if not (s.get("seen_ids") or [])
+            if s.get("seen_ids") is None
         ]
         if not new_searches:
             return
@@ -816,21 +828,25 @@ async def welcome_new_searches(context: ContextTypes.DEFAULT_TYPE):
             else:
                 no_mfr.append((chat_id, s))
 
-        # Manufacturer searches: fetch once, fan out via _process_search_with_listings
-        # (its first-run path seeds ALL matching and sends the welcome header)
+        # Manufacturer searches: fetch once, process with bounded concurrency (max 3 at a time)
+        _welcome_sem = asyncio.Semaphore(3)
+
+        async def _welcome_one(mfr_listings, w_chat_id, w_s):
+            async with _welcome_sem:
+                await _process_search_with_listings(context.bot, w_chat_id, w_s, mfr_listings)
+
         for mfr, group in by_mfr.items():
             try:
                 listings = await scraper.fetch_listings({"manufacturer": mfr})
                 if not listings:
                     continue
                 results = await asyncio.gather(
-                    *[_process_search_with_listings(context.bot, chat_id, s, listings)
-                      for chat_id, s in group],
+                    *[_welcome_one(listings, chat_id, s) for chat_id, s in group],
                     return_exceptions=True,
                 )
                 for (chat_id, s), res in zip(group, results):
                     if isinstance(res, Exception):
-                        logger.error(f"welcome {s.get('id')} for {chat_id}: {res}", exc_info=(type(res), res, res.__traceback__))
+                        logger.error(f"welcome {s.get('id')} for {chat_id}: {res}", exc_info=True)
             except Exception as e:
                 logger.error(f"welcome_new_searches mfr={mfr}: {e}", exc_info=True)
 

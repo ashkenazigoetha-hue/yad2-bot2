@@ -72,24 +72,24 @@ class SupabaseManager:
 
     # ── seen_ids + seen_prices ────────────────────────────────────────────────
 
-    def get_seen_state(self, search_id: str) -> tuple[list[str], dict]:
-        """Single DB call — returns (seen_ids, seen_prices)."""
+    def get_seen_state(self, search_id: str) -> tuple[list[str] | None, dict]:
+        """Single DB call — returns (seen_ids, seen_prices). seen_ids is None if never seeded."""
         rows = _get("searches", {"id": f"eq.{search_id}", "select": "seen_ids,seen_prices"})
         if not rows:
-            return [], {}
-        return (rows[0].get("seen_ids") or []), (rows[0].get("seen_prices") or {})
+            return None, {}
+        return rows[0].get("seen_ids"), (rows[0].get("seen_prices") or {})
 
     def get_seen_ids(self, search_id: str) -> list[str]:
         ids, _ = self.get_seen_state(search_id)
-        return ids
+        return ids or []
 
     def mark_seen(self, search_id: str, new_ids: list[str], current: list[str] = None,
-                  price_map: dict = None, current_prices: dict = None):
-        if not new_ids and not price_map:
+                  price_map: dict = None, current_prices: dict = None, force_write: bool = False):
+        if not new_ids and not price_map and not force_write:
             return
         if current is None:
             current_ids, current_prices_fetched = self.get_seen_state(search_id)
-            current = current_ids
+            current = current_ids or []
             if current_prices is None:
                 current_prices = current_prices_fetched
         elif current_prices is None:
