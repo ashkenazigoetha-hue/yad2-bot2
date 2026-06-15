@@ -431,41 +431,14 @@ async def _process_search_with_listings(bot, chat_id: str, search: dict, all_lis
 async def poll_all_searches(context: ContextTypes.DEFAULT_TYPE):
     global _poll_sem
     if _poll_sem is None:
-        _poll_sem = asyncio.Semaphore(5)  # 5 concurrent manufacturer fetches
+        _poll_sem = asyncio.Semaphore(5)
 
     logger.info("⏱ Running scheduled poll...")
     try:
         all_searches = await asyncio.to_thread(sb.get_all_searches)
+        logger.info(f"Poll: {len(all_searches)} searches")
 
-        # Group by manufacturer — one yad2 fetch per manufacturer, fan out to all matching searches
-        by_mfr: dict[str, list[tuple[str, dict]]] = defaultdict(list)
-        no_mfr: list[tuple[str, dict]] = []
-        for chat_id, s in all_searches:
-            mfr = (s.get("manufacturer") or "").strip()
-            if mfr:
-                by_mfr[mfr].append((chat_id, s))
-            else:
-                no_mfr.append((chat_id, s))
-
-        logger.info(f"Poll: {len(all_searches)} searches, {len(by_mfr)} unique manufacturers, {len(no_mfr)} no-manufacturer")
-
-        async def process_manufacturer(mfr: str, group: list[tuple[str, dict]]):
-            async with _poll_sem:
-                listings = await scraper.fetch_listings({"manufacturer": mfr})
-            if not listings:
-                return
-            # Process all searches for this manufacturer in parallel — each has its own Lock
-            search_results = await asyncio.gather(
-                *[_process_search_with_listings(context.bot, chat_id, s, listings)
-                  for chat_id, s in group],
-                return_exceptions=True,
-            )
-            for (chat_id, s), res in zip(group, search_results):
-                if isinstance(res, Exception):
-                    logger.error(f"Search {s.get('id')} for {chat_id}: {res}",
-                                 exc_info=(type(res), res, res.__traceback__))
-
-        async def process_no_mfr(chat_id: str, s: dict):
+        async def process_one(chat_id: str, s: dict):
             if _active_search_ids is not None and s["id"] not in _active_search_ids:
                 logger.info(f"Search {s['id']} was deleted — skipping")
                 return
@@ -475,20 +448,19 @@ async def poll_all_searches(context: ContextTypes.DEFAULT_TYPE):
                 await send_listing(context.bot, int(chat_id), listing, s["name"])
                 logger.info(f"Sent {listing['id']} to {chat_id}")
 
-        tasks = (
-            [process_manufacturer(mfr, group) for mfr, group in by_mfr.items()] +
-            [process_no_mfr(chat_id, s) for chat_id, s in no_mfr]
+        results = await asyncio.gather(
+            *[process_one(chat_id, s) for chat_id, s in all_searches],
+            return_exceptions=True,
         )
-        results = await asyncio.gather(*tasks, return_exceptions=True)
         for i, res in enumerate(results):
             if isinstance(res, Exception):
                 logger.error(f"Poll task {i} failed: {res}",
                              exc_info=(type(res), res, res.__traceback__))
 
-        active_ids = {s["id"] for _, s in all_searches}
-        for sid in list(_fetch_locks.keys()):
-            if sid not in active_ids:
-                del _fetch_locks[sid]
+        if _active_search_ids is not None:
+            for sid in list(_fetch_locks.keys()):
+                if sid not in _active_search_ids:
+                    del _fetch_locks[sid]
 
     except Exception as e:
         logger.error(f"poll_all_searches crashed: {e}", exc_info=True)
