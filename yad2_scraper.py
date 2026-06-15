@@ -219,6 +219,15 @@ class Yad2Scraper:
                 logger.info(f"Using proxy: {proxy.split('@')[-1]}")
         return self._session
 
+    async def _reset_session(self):
+        """Close and discard the current session so the next request gets a fresh TLS fingerprint."""
+        if self._session:
+            try:
+                await self._session.close()
+            except Exception:
+                pass
+        self._session = None
+
     async def download_photo(self, url: str) -> Optional[bytes]:
         """Download photo using the same Chrome-impersonating session that bypasses yad2 CDN."""
         try:
@@ -435,13 +444,15 @@ class Yad2Scraper:
         html = response.text
         logger.info(f"yad2 fetch: url={url} status={response.status_code} len={len(html)}")
         if response.status_code != 200:
-            logger.warning(f"Bad status: {response.status_code}")
+            logger.warning(f"Bad status: {response.status_code} — resetting session")
+            await self._reset_session()
             return []
         if "__NEXT_DATA__" not in html:
             if "shieldsquare" in html.lower() or "captcha" in html.lower():
-                logger.warning(f"ShieldSquare/CAPTCHA detected on {url[:80]} — bot is being blocked")
+                logger.warning(f"ShieldSquare/CAPTCHA detected on {url[:80]} — resetting session")
             else:
-                logger.warning(f"No __NEXT_DATA__ (status={response.status_code}) on {url[:80]} — wrong page or blocked")
+                logger.warning(f"No __NEXT_DATA__ on {url[:80]} — resetting session")
+            await self._reset_session()
             return []
         return self._parse_page(html)
 
