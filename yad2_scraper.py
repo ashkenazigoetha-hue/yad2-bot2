@@ -482,9 +482,9 @@ class Yad2Scraper:
             wanted_sub = str(search.get("sub_model") or "").strip()
 
             all_results: list[dict] = []
-            # Promoted/boost listings dominate pages 1-2; new organic listings land on page 3+.
-            # Fetch up to 5 pages, but stop early once a full page contains only already-seen IDs.
-            max_pages = 5
+            # Always fetch 3 pages: promoted listings fill pages 1-2 and push new
+            # organic listings to page 3. Stopping early on page 2 caused missed listings.
+            max_pages = 3
             for page in range(1, max_pages + 1):
                 p = dict(params)
                 if page > 1:
@@ -494,18 +494,6 @@ class Yad2Scraper:
                 if not page_results:
                     break
                 all_results.extend(page_results)
-
-                # Smart early stop: once past page 1, if every listing on this page was
-                # already seen, there's no point going deeper — new listings would have
-                # appeared earlier in the date-sorted feed.
-                if seen_ids is not None and page >= 2 and page_results:
-                    new_on_page = [r for r in page_results if r["id"] not in seen_ids]
-                    if not new_on_page:
-                        logger.info(f"Page {page}: all {len(page_results)} listings already seen — stopping pagination")
-                        break
-
-                if len(all_results) > 300:
-                    break
 
             # Deduplicate by id
             seen: set[str] = set()
