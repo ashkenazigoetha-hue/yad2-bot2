@@ -221,12 +221,8 @@ class Yad2Scraper:
         return self._session
 
     async def _reset_session(self):
-        """Close and discard the current session so the next request gets a fresh TLS fingerprint."""
-        if self._session:
-            try:
-                await self._session.close()
-            except Exception:
-                pass
+        """Discard the session reference so the next _get_session() call creates a fresh one.
+        Do NOT close — in-flight requests on the old object continue safely via their local ref."""
         self._session = None
 
     async def download_photo(self, url: str) -> Optional[bytes]:
@@ -407,16 +403,15 @@ class Yad2Scraper:
 
     async def enrich_with_km(self, listings: list[dict]) -> list[dict]:
         """Fetch km, ownership and contact info for each listing (max 3 concurrent)."""
-        import asyncio as _asyncio
         if not listings:
             return listings
-        sem = _asyncio.Semaphore(3)
+        sem = asyncio.Semaphore(3)
 
         async def _limited(token: str):
             async with sem:
                 return await self._fetch_item_details(token)
 
-        details_list = await _asyncio.gather(
+        details_list = await asyncio.gather(
             *[_limited(l["id"]) for l in listings],
             return_exceptions=True,
         )
@@ -473,7 +468,9 @@ class Yad2Scraper:
         logger.error(f"_fetch_url failed after {len(retry_delays)} attempts: {url[:80]}")
         return []
 
-    async def fetch_listings(self, search: dict, seen_ids: set = None) -> list[dict]:
+    async def fetch_listings(self, search: dict, seen_ids: set = None) -> tuple[list[dict], bool]:
+        """Returns (listings, yad2_responded) where yad2_responded=True means yad2 sent data
+        (even if no listings matched filters). False means all pages were blocked/empty."""
         try:
             params = self._build_params(search)
             # Sort by newest first so fresh listings appear on page 1
@@ -482,6 +479,7 @@ class Yad2Scraper:
             wanted_sub = str(search.get("sub_model") or "").strip()
 
             all_results: list[dict] = []
+            yad2_responded = False
             # Always fetch 3 pages: promoted listings fill pages 1-2 and push new
             # organic listings to page 3. Stopping early on page 2 caused missed listings.
             max_pages = 3
@@ -491,6 +489,8 @@ class Yad2Scraper:
                     p["page"] = page
                 url = f"{YAD2_SEARCH_URL}?{urlencode(p)}" if p else YAD2_SEARCH_URL
                 page_results = await self._fetch_url(url)
+                if page_results:
+                    yad2_responded = True
                 if not page_results:
                     break
                 all_results.extend(page_results)
@@ -512,7 +512,7 @@ class Yad2Scraper:
                     f"{before} → {len(unique)} listings (across {max_pages} pages)"
                 )
 
-            return unique
+            return unique, yad2_responded
         except Exception as e:
             logger.error(f"fetch_listings error: {e}", exc_info=True)
             raise
