@@ -3,6 +3,7 @@ Yad2 Scraper – curl-cffi mimics Chrome TLS fingerprint to bypass ShieldSquare.
 No headless browser needed.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -434,27 +435,43 @@ class Yad2Scraper:
         return listings
 
     async def _fetch_url(self, url: str) -> list[dict]:
-        session = await self._get_session()
-        response = await session.get(
-            url,
-            impersonate="chrome124",
-            headers={"Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8"},
-            timeout=30,
-        )
-        html = response.text
-        logger.info(f"yad2 fetch: url={url} status={response.status_code} len={len(html)}")
-        if response.status_code != 200:
-            logger.warning(f"Bad status: {response.status_code} — resetting session")
-            await self._reset_session()
-            return []
-        if "__NEXT_DATA__" not in html:
-            if "shieldsquare" in html.lower() or "captcha" in html.lower():
-                logger.warning(f"ShieldSquare/CAPTCHA detected on {url[:80]} — resetting session")
+        # Retry up to 3 times with a fresh session on each block detection.
+        # Delays: 0s → 15s → 30s so transient yad2 blocks are resolved within the
+        # same 15-minute poll window instead of being silently skipped.
+        retry_delays = [0, 15, 30]
+        for attempt, delay in enumerate(retry_delays):
+            if delay:
+                logger.info(f"Retrying {url[:60]} in {delay}s (attempt {attempt + 1})...")
+                await asyncio.sleep(delay)
+            try:
+                session = await self._get_session()
+                response = await session.get(
+                    url,
+                    impersonate="chrome124",
+                    headers={"Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8"},
+                    timeout=30,
+                )
+            except Exception as e:
+                logger.warning(f"_fetch_url request error (attempt {attempt + 1}): {e} — resetting session")
+                await self._reset_session()
+                continue
+
+            html = response.text
+            logger.info(f"yad2 fetch: url={url} status={response.status_code} len={len(html)} attempt={attempt + 1}")
+
+            if response.status_code == 200 and "__NEXT_DATA__" in html:
+                return self._parse_page(html)
+
+            if response.status_code != 200:
+                logger.warning(f"Bad status: {response.status_code} (attempt {attempt + 1}) — resetting session")
+            elif "shieldsquare" in html.lower() or "captcha" in html.lower():
+                logger.warning(f"ShieldSquare/CAPTCHA detected (attempt {attempt + 1}) — resetting session")
             else:
-                logger.warning(f"No __NEXT_DATA__ on {url[:80]} — resetting session")
+                logger.warning(f"No __NEXT_DATA__ (attempt {attempt + 1}) — resetting session")
             await self._reset_session()
-            return []
-        return self._parse_page(html)
+
+        logger.error(f"_fetch_url failed after {len(retry_delays)} attempts: {url[:80]}")
+        return []
 
     async def fetch_listings(self, search: dict, seen_ids: set = None) -> list[dict]:
         try:
