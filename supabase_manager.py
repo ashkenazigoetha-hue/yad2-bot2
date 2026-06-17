@@ -83,6 +83,17 @@ class SupabaseManager:
         ids, _ = self.get_seen_state(search_id)
         return ids or []
 
+    def get_searches_by_email(self, email: str) -> tuple[dict | None, list[dict]]:
+        rows = _get("profiles", {"email": f"eq.{email}", "select": "id,email,telegram_chat_id"})
+        if not rows:
+            return None, []
+        profile = rows[0]
+        searches = _get("searches", {"user_id": f"eq.{profile['id']}", "select": "*"})
+        return profile, searches
+
+    def reset_seen_ids(self, search_id: str):
+        _patch("searches", {"id": f"eq.{search_id}"}, {"seen_ids": None, "seen_prices": None})
+
     def mark_seen(self, search_id: str, new_ids: list[str], current: list[str] = None,
                   price_map: dict = None, current_prices: dict = None, force_write: bool = False):
         if not new_ids and not price_map and not force_write:

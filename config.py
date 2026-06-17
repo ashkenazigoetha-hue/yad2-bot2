@@ -14,6 +14,7 @@ class Config:
         self.TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
         self.POLL_INTERVAL_MINUTES = int(os.getenv("POLL_INTERVAL_MINUTES", "15"))
         self.DATA_DIR = os.getenv("DATA_DIR", "data")
+        self.ADMIN_CHAT_IDS = os.getenv("ADMIN_CHAT_IDS", "")
         if not self.TELEGRAM_TOKEN:
             raise ValueError("TELEGRAM_TOKEN must be set in .env")
         if not os.getenv("SUPABASE_SERVICE_KEY"):
