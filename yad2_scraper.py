@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import re
 from datetime import datetime
 from typing import Optional
@@ -17,6 +18,12 @@ from curl_cffi.requests import AsyncSession
 logger = logging.getLogger(__name__)
 
 YAD2_SEARCH_URL = "https://www.yad2.co.il/vehicles/cars"
+
+# Rotate between Chrome versions so the TLS fingerprint varies per request
+CHROME_VERSIONS = [
+    "chrome99", "chrome104", "chrome110", "chrome116",
+    "chrome119", "chrome120", "chrome123", "chrome124",
+]
 
 MANUFACTURER_MAP = {
     "toyota": "טויוטה", "honda": "הונדה", "mazda": "מאזדה",
@@ -211,6 +218,7 @@ SUBMODEL_SYNONYMS: dict[str, list[str]] = {
 class Yad2Scraper:
     def __init__(self):
         self._session: Optional[AsyncSession] = None
+        self.consecutive_failures = 0  # reset on any successful fetch, incremented per full _fetch_url failure
 
     async def _get_session(self) -> AsyncSession:
         if self._session is None:
@@ -440,9 +448,10 @@ class Yad2Scraper:
                 await asyncio.sleep(delay)
             try:
                 session = await self._get_session()
+                impersonate = random.choice(CHROME_VERSIONS)
                 response = await session.get(
                     url,
-                    impersonate="chrome124",
+                    impersonate=impersonate,
                     headers={"Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8"},
                     timeout=30,
                 )
@@ -452,9 +461,10 @@ class Yad2Scraper:
                 continue
 
             html = response.text
-            logger.info(f"yad2 fetch: url={url} status={response.status_code} len={len(html)} attempt={attempt + 1}")
+            logger.info(f"yad2 fetch: url={url} status={response.status_code} len={len(html)} attempt={attempt + 1} impersonate={impersonate}")
 
             if response.status_code == 200 and "__NEXT_DATA__" in html:
+                self.consecutive_failures = 0
                 return self._parse_page(html)
 
             if response.status_code != 200:
@@ -465,7 +475,8 @@ class Yad2Scraper:
                 logger.warning(f"No __NEXT_DATA__ (attempt {attempt + 1}) — resetting session")
             await self._reset_session()
 
-        logger.error(f"_fetch_url failed after {len(retry_delays)} attempts: {url[:80]}")
+        self.consecutive_failures += 1
+        logger.error(f"_fetch_url failed after {len(retry_delays)} attempts (total consecutive={self.consecutive_failures}): {url[:80]}")
         return []
 
     async def fetch_listings(self, search: dict, seen_ids: set = None) -> tuple[list[dict], bool]:
@@ -486,6 +497,7 @@ class Yad2Scraper:
             for page in range(1, max_pages + 1):
                 p = dict(params)
                 if page > 1:
+                    await asyncio.sleep(random.uniform(0.5, 1.5))
                     p["page"] = page
                 url = f"{YAD2_SEARCH_URL}?{urlencode(p)}" if p else YAD2_SEARCH_URL
                 page_results = await self._fetch_url(url)

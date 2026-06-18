@@ -535,6 +535,18 @@ async def poll_all_searches(context: ContextTypes.DEFAULT_TYPE):
             if isinstance(res, Exception):
                 logger.error(f"Poll task {i} failed: {res}", exc_info=(type(res), res, res.__traceback__))
 
+        if scraper.consecutive_failures >= 3 and ADMIN_CHAT_IDS:
+            alert = (
+                f"⚠️ *יד2 לא מגיבה*\n\n"
+                f"{scraper.consecutive_failures} כשלונות ברצף — ייתכן שה-IP נחסם.\n"
+                f"נסה `/debug_now` לבדיקה."
+            )
+            for cid in ADMIN_CHAT_IDS:
+                try:
+                    await context.bot.send_message(int(cid), alert, parse_mode="Markdown")
+                except Exception:
+                    pass
+
         if _active_search_ids is not None:
             for sid in list(_fetch_locks.keys()):
                 if sid not in _active_search_ids:
