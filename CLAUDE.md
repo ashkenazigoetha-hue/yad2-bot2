@@ -4,13 +4,6 @@ This file is read automatically by Claude Code. It describes the project context
 
 ---
 
-## Who's who
-
-- **עידו (Ido)** — the developer. Makes all code changes via Claude Code on his own machine. Pushes to GitHub.
-- **אראל (Aral)** — runs the bot. Does `git pull` + restart whenever Ido pushes. No coding required from Aral.
-
----
-
 ## Where the bot runs
 
 **Currently**: Aral's MacBook laptop (`python bot.py` in terminal, must be left open).
