@@ -926,6 +926,11 @@ async def welcome_new_searches(context: ContextTypes.DEFAULT_TYPE):
 
 # ── Error handling ────────────────────────────────────────────────────────────
 
+async def my_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    await update.message.reply_text(f"🔑 ה-Chat ID שלך:\n\n`{chat_id}`", parse_mode="Markdown")
+
+
 ADMIN_CHAT_IDS = set(filter(None, os.getenv("ADMIN_CHAT_IDS", "").split(",")))
 
 
@@ -1030,6 +1035,7 @@ def main():
     app.add_handler(CommandHandler("debug_search", debug_search))
     app.add_handler(CommandHandler("logs", logs_cmd))
     app.add_handler(CommandHandler("status", status_cmd))
+    app.add_handler(CommandHandler("my_id", my_id))
     app.add_handler(CommandHandler("admin_debug", admin_debug))
     app.add_handler(CommandHandler("admin_reset", admin_reset))
     app.add_handler(CallbackQueryHandler(view_search, pattern="^view_"))
