@@ -472,23 +472,51 @@ async def poll_all_searches(context: ContextTypes.DEFAULT_TYPE):
         all_searches = await asyncio.to_thread(sb.get_all_searches)
         logger.info(f"Poll: {len(all_searches)} searches")
 
-        async def process_one(chat_id: str, s: dict):
+        # New (unseeded) searches are handled by welcome_new_searches — skip them here
+        seeded = [(chat_id, s) for chat_id, s in all_searches if s.get("seen_ids") is not None]
+
+        # Group by manufacturer so each manufacturer is fetched from yad2 only once
+        by_mfr: dict[str, list[tuple[str, dict]]] = defaultdict(list)
+        no_mfr: list[tuple[str, dict]] = []
+        for chat_id, s in seeded:
+            mfr = (s.get("manufacturer") or "").strip()
+            if mfr:
+                by_mfr[mfr].append((chat_id, s))
+            else:
+                no_mfr.append((chat_id, s))
+
+        logger.info(f"Poll: {len(by_mfr)} unique manufacturers, {len(no_mfr)} no-manufacturer searches")
+
+        fetch_sem = asyncio.Semaphore(5)    # max 5 concurrent yad2 fetches
+        process_sem = asyncio.Semaphore(10)  # max 10 concurrent per-search processing tasks
+
+        async def _process_one(chat_id: str, s: dict, listings: list):
+            async with process_sem:
+                await _process_search_with_listings(context.bot, chat_id, s, listings)
+
+        async def _fetch_and_process_mfr(mfr: str, group: list):
+            async with fetch_sem:
+                try:
+                    listings, _ = await scraper.fetch_listings({"manufacturer": mfr})
+                except Exception as e:
+                    logger.error(f"Poll fetch failed for mfr={mfr}: {e}")
+                    return
+            if not listings:
+                return
+            results = await asyncio.gather(
+                *[_process_one(chat_id, s, listings) for chat_id, s in group],
+                return_exceptions=True,
+            )
+            for (chat_id, s), res in zip(group, results):
+                if isinstance(res, Exception):
+                    logger.error(f"Poll task {s['id']} for {chat_id}: {res}", exc_info=True)
+
+        async def _process_no_mfr(chat_id: str, s: dict):
             if _active_search_ids is not None and s["id"] not in _active_search_ids:
-                logger.info(f"Search {s['id']} was deleted — skipping")
                 return
             new_listings, was_first_run, ids_to_mark = await _fetch_new(s)
             if not new_listings:
                 return
-            if was_first_run:
-                new_listings.sort(key=lambda l: scraper._parse_listing_date(l.get("listing_date")) or datetime.min)
-                try:
-                    await context.bot.send_message(
-                        int(chat_id),
-                        f"📋 *{s['name']}* — {len(new_listings)} מודעות אחרונות מהשבוע:",
-                        parse_mode="Markdown",
-                    )
-                except Exception:
-                    pass
             sent_ids = []
             for listing in new_listings:
                 try:
@@ -499,18 +527,13 @@ async def poll_all_searches(context: ContextTypes.DEFAULT_TYPE):
                     logger.error(f"send failed {listing['id']} → {chat_id}: {e}")
             if sent_ids:
                 await asyncio.to_thread(sb.mark_seen, s["id"], sent_ids)
-            missed = len(ids_to_mark) - len(sent_ids)
-            if missed > 0:
-                logger.warning(f"{missed} listing(s) not sent for search {s['id']} (chat {chat_id}) — will retry next poll")
 
-        results = await asyncio.gather(
-            *[process_one(chat_id, s) for chat_id, s in all_searches],
-            return_exceptions=True,
-        )
+        tasks = [_fetch_and_process_mfr(mfr, group) for mfr, group in by_mfr.items()]
+        tasks += [_process_no_mfr(chat_id, s) for chat_id, s in no_mfr]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
         for i, res in enumerate(results):
             if isinstance(res, Exception):
-                logger.error(f"Poll task {i} failed: {res}",
-                             exc_info=(type(res), res, res.__traceback__))
+                logger.error(f"Poll task {i} failed: {res}", exc_info=(type(res), res, res.__traceback__))
 
         if _active_search_ids is not None:
             for sid in list(_fetch_locks.keys()):
