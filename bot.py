@@ -61,6 +61,29 @@ def _safe(s) -> str:
     """Strip Markdown-special chars from dynamic content (titles, cities, trims)."""
     return str(s or "").replace("*", "").replace("_", "").replace("`", "").replace("[", "").replace("]", "")
 
+
+try:
+    from zoneinfo import ZoneInfo
+    _IL_TZ = ZoneInfo("Asia/Jerusalem")
+except Exception:  # pragma: no cover
+    _IL_TZ = None
+
+
+def _fmt_il_time(iso_ts: Optional[str]) -> str:
+    """Format a UTC ISO timestamp from Supabase as local Israel time (HH:MM DD/MM).
+    Timestamps are stored in UTC; showing them raw confused users (looked hours stale)."""
+    if not iso_ts:
+        return "עדיין לא בוצעה"
+    try:
+        dt = datetime.fromisoformat(str(iso_ts).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=ZoneInfo("UTC")) if _IL_TZ else dt
+        if _IL_TZ is not None:
+            dt = dt.astimezone(_IL_TZ)
+        return dt.strftime("%H:%M %d/%m")
+    except Exception:
+        return _safe(str(iso_ts)[:16].replace("T", " "))
+
 # ── /start ────────────────────────────────────────────────────────────────────
 
 SITE_URL = os.getenv("SITE_URL", "https://carconnoisseur-web-iota.vercel.app").rstrip("/")
@@ -220,7 +243,7 @@ async def view_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     seen = len(s.get("seen_ids") or [])
     lines.append(f"\n👁 מודעות שנראו: {seen}")
     if s.get("last_scanned_at"):
-        lines.append(f"🕐 סריקה אחרונה: {_safe(s['last_scanned_at'][:16].replace('T', ' '))}")
+        lines.append(f"🕐 סריקה אחרונה: {_fmt_il_time(s['last_scanned_at'])}")
 
     keyboard = [
         [
@@ -496,17 +519,23 @@ async def poll_all_searches(context: ContextTypes.DEFAULT_TYPE):
         # New (unseeded) searches are handled by welcome_new_searches — skip them here
         seeded = [(chat_id, s) for chat_id, s in all_searches if s.get("seen_ids") is not None]
 
-        # Group by manufacturer so each manufacturer is fetched from yad2 only once
-        by_mfr: dict[str, list[tuple[str, dict]]] = defaultdict(list)
+        # Group by (manufacturer, model) so each distinct model is fetched from
+        # yad2 filtered to that model. This keeps a brand-new model-specific
+        # listing on page 1 of the result set instead of being pushed past the
+        # 3 fetched pages by other models / promoted ads of the same manufacturer
+        # (which delayed model-specific alerts by hours). Searches with a
+        # manufacturer but no specific model still fetch the whole brand feed.
+        by_key: dict[tuple[str, str], list[tuple[str, dict]]] = defaultdict(list)
         no_mfr: list[tuple[str, dict]] = []
         for chat_id, s in seeded:
             mfr = (s.get("manufacturer") or "").strip()
+            model = (s.get("model") or "").strip()
             if mfr:
-                by_mfr[mfr].append((chat_id, s))
+                by_key[(mfr, model)].append((chat_id, s))
             else:
                 no_mfr.append((chat_id, s))
 
-        logger.info(f"Poll: {len(by_mfr)} unique manufacturers, {len(no_mfr)} no-manufacturer searches")
+        logger.info(f"Poll: {len(by_key)} unique (manufacturer, model) groups, {len(no_mfr)} no-manufacturer searches")
 
         fetch_sem = asyncio.Semaphore(5)    # max 5 concurrent yad2 fetches
         process_sem = asyncio.Semaphore(10)  # max 10 concurrent per-search processing tasks
@@ -515,12 +544,16 @@ async def poll_all_searches(context: ContextTypes.DEFAULT_TYPE):
             async with process_sem:
                 await _process_search_with_listings(context.bot, chat_id, s, listings)
 
-        async def _fetch_and_process_mfr(mfr: str, group: list):
+        async def _fetch_and_process_mfr(key: tuple[str, str], group: list):
+            mfr, model = key
+            params = {"manufacturer": mfr}
+            if model:
+                params["model"] = model
             async with fetch_sem:
                 try:
-                    listings, _ = await scraper.fetch_listings({"manufacturer": mfr})
+                    listings, _ = await scraper.fetch_listings(dict(params))
                 except Exception as e:
-                    logger.error(f"Poll fetch failed for mfr={mfr}: {e}")
+                    logger.error(f"Poll fetch failed for {mfr}/{model}: {e}")
                     return
             if not listings:
                 return
@@ -554,7 +587,7 @@ async def poll_all_searches(context: ContextTypes.DEFAULT_TYPE):
                 await asyncio.to_thread(sb.mark_seen, s["id"], sent_ids, None, sent_prices)
                 await asyncio.to_thread(sb.mark_notified, s["id"])
 
-        tasks = [_fetch_and_process_mfr(mfr, group) for mfr, group in by_mfr.items()]
+        tasks = [_fetch_and_process_mfr(key, group) for key, group in by_key.items()]
         tasks += [_process_no_mfr(chat_id, s) for chat_id, s in no_mfr]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for i, res in enumerate(results):
@@ -857,13 +890,28 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     searches = await asyncio.to_thread(sb.get_searches, chat_id)
+    if not searches:
+        await update.message.reply_text(
+            "📭 אין לך חיפושים שמורים עדיין.\n\nהיכנס לאתר כדי להוסיף חיפוש 🚗",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("⚙️ הוספת חיפוש", url=f"{SITE_URL}/dashboard")
+            ]]),
+        )
+        return
+
+    # Show only THIS user's own searches, each with its state — nothing about
+    # other users or system-wide totals.
+    lines = ["📋 *הסטטוס שלך*\n"]
+    for s in searches:
+        active = s.get("is_active", True)
+        state = "🟢 פעיל" if active else "⏸️ מושהה"
+        lines.append(f"• *{_safe(s.get('name') or 'חיפוש')}* — {state}")
     scanned = [s.get("last_scanned_at") for s in searches if s.get("last_scanned_at")]
-    last_scan = max(scanned)[:16].replace("T", " ") if scanned else "עדיין לא בוצעה"
+    last_scan = _fmt_il_time(max(scanned)) if scanned else "עדיין לא בוצעה"
+    lines.append(f"\n🕐 סריקה אחרונה: {last_scan}")
+    lines.append(f"⏱ הבוט סורק אוטומטית כל {config.POLL_INTERVAL_MINUTES} דקות")
     await update.message.reply_text(
-        "✅ *המעקב שלך פעיל*\n\n"
-        f"🔍 חיפושים פעילים: {len(searches)}\n"
-        f"🕐 סריקה אחרונה: {_safe(last_scan)}\n"
-        f"⏱ תדירות: כל {config.POLL_INTERVAL_MINUTES} דקות",
+        "\n".join(lines),
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("⚙️ ניהול החיפושים", url=f"{SITE_URL}/dashboard")
