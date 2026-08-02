@@ -63,7 +63,7 @@ def _safe(s) -> str:
 
 # ── /start ────────────────────────────────────────────────────────────────────
 
-SITE_URL = "https://carconnoisseur-web-iota.vercel.app"
+SITE_URL = os.getenv("SITE_URL", "https://carconnoisseur-web-iota.vercel.app").rstrip("/")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -177,7 +177,7 @@ async def my_searches(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not searches:
         await update.message.reply_text(
             "📭 אין לך חיפושים שמורים.\n\n"
-            "כנס לאתר carconnoisseur-web-iota.vercel.app להוספת חיפוש 🚗"
+            f"כנס לאתר {SITE_URL.split('//')[-1]} להוספת חיפוש 🚗"
         )
         return
 
@@ -825,7 +825,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "*/status* – סטטוס הבוט\n"
         "*/clear\\_history* – אפס את נקודת ההתחלה של המעקב\n\n"
         f"⏱ הבוט בודק אוטומטית כל *{config.POLL_INTERVAL_MINUTES}* דקות.\n"
-        "🌐 חיפושים מנוהלים באתר: carconnoisseur-web-iota.vercel.app",
+        f"🌐 חיפושים מנוהלים באתר: {SITE_URL.split('//')[-1]}",
         parse_mode="Markdown",
     )
 
