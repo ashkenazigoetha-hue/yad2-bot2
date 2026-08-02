@@ -3,6 +3,7 @@ import os
 import sys
 import types
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 
@@ -60,18 +61,23 @@ os.environ.setdefault("TELEGRAM_TOKEN", "test-token")
 os.environ.setdefault("SUPABASE_SERVICE_KEY", "test-key")
 _install_dependency_stubs()
 bot_module = importlib.import_module("bot")
+supabase_module = importlib.import_module("supabase_manager")
 
 
 class FakeStore:
     def __init__(self, seen_ids, seen_prices=None):
         self.state = (seen_ids, seen_prices or {})
         self.mark_calls = []
+        self.status_calls = []
 
     def get_seen_state(self, _search_id):
         return self.state
 
     def mark_seen(self, *args):
         self.mark_calls.append(args)
+
+    def update_search_status(self, *args):
+        self.status_calls.append(args)
 
 
 class FakeScraper:
@@ -137,19 +143,68 @@ class BotBehaviorTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RuntimeError):
             await bot_module.send_listing(telegram_bot, 123, listing, "test")
 
-    async def test_failed_email_lookup_keeps_waiting_for_retry(self):
-        message = types.SimpleNamespace(text="missing@example.com", reply_text=AsyncMock())
-        update = types.SimpleNamespace(
-            message=message,
-            effective_chat=types.SimpleNamespace(id=123),
+    async def test_rich_listing_message_keeps_vehicle_details_and_actions(self):
+        telegram_bot = types.SimpleNamespace(send_message=AsyncMock())
+        listing = {
+            "id": "new-2",
+            "url": "https://example.test/item/new-2",
+            "title": "טויוטה קורולה",
+            "trim": "Comfort",
+            "price": 82500,
+            "year": 2021,
+            "hand": 2,
+            "km": 67000,
+            "ownership": "פרטית",
+            "engine_cc": 1800,
+            "engine_type": "היברידי",
+            "horsepower": 122,
+            "test_date": "12/2026",
+            "city": "חיפה",
+            "features": "בקרת שיוט, מצלמת רוורס",
+            "description": "שמור מאוד, ללא תאונות",
+        }
+
+        await bot_module.send_listing(
+            telegram_bot, 123, listing, "קורולה למשפחה", "search-7"
         )
-        context = types.SimpleNamespace(user_data={bot_module.WAITING_EMAIL: True})
-        store = types.SimpleNamespace(link_email=lambda _chat_id, _email: False)
 
-        with patch.object(bot_module, "sb", store):
-            await bot_module.handle_email(update, context)
+        text = telegram_bot.send_message.await_args.args[1]
+        for expected in [
+            "יד 2", "67,000", "פרטית", "1.8 ל׳", "היברידי", "122 כ\"ס",
+            "טסט עד", "חיפה", "בקרת שיוט", "שמור מאוד", "קורולה למשפחה",
+        ]:
+            self.assertIn(expected, text)
+        markup = telegram_bot.send_message.await_args.kwargs["reply_markup"]
+        self.assertEqual(markup.args[0][1][0].kwargs["callback_data"], "pause_search-7")
 
-        self.assertTrue(context.user_data[bot_module.WAITING_EMAIL])
+
+class TelegramLinkTests(unittest.TestCase):
+    def test_one_time_token_links_chat_and_is_cleared(self):
+        token = "123e4567-e89b-12d3-a456-426614174000"
+        expires = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+        patches = []
+
+        with patch.object(
+            supabase_module,
+            "_get",
+            return_value=[{"id": "profile-1", "email": "user@example.com", "telegram_link_expires_at": expires}],
+        ), patch.object(
+            supabase_module,
+            "_patch",
+            side_effect=lambda path, params, body: patches.append((path, params, body)) or [{}],
+        ):
+            linked = supabase_module.SupabaseManager().link_telegram_token("987", token)
+
+        self.assertEqual(linked["id"], "profile-1")
+        final_body = patches[-1][2]
+        self.assertEqual(final_body["telegram_chat_id"], "987")
+        self.assertIsNone(final_body["telegram_link_token"])
+
+    def test_invalid_token_is_rejected_before_database_query(self):
+        with patch.object(supabase_module, "_get") as get_mock:
+            result = supabase_module.SupabaseManager().link_telegram_token("987", "not-a-token")
+        self.assertIsNone(result)
+        get_mock.assert_not_called()
 
 
 if __name__ == "__main__":

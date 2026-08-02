@@ -367,7 +367,7 @@ class Yad2Scraper:
         return True
 
     async def _fetch_item_details(self, token: str) -> dict:
-        """Fetch km, ownership and contact info from the listing detail page."""
+        """Fetch km, ownership, seller notes, features and contact info."""
         result = {}
         try:
             session = await self._get_session()
@@ -404,6 +404,34 @@ class Yad2Scraper:
                         result["contact_name"] = name
                     if phone:
                         result["contact_phone"] = phone
+
+                    def _detail_text(value) -> str:
+                        if isinstance(value, str):
+                            return value.strip()
+                        if isinstance(value, dict):
+                            return str(value.get("text") or value.get("value") or "").strip()
+                        return ""
+
+                    description = next((
+                        text for text in (
+                            _detail_text(vd.get("description")),
+                            _detail_text(vd.get("freeText")),
+                            _detail_text(vd.get("additionalInfo")),
+                            _detail_text(vd.get("info")),
+                        ) if text
+                    ), "")
+                    if description:
+                        result["description"] = description
+
+                    raw_features = vd.get("tags") or vd.get("features") or vd.get("vehicleFeatures") or []
+                    if isinstance(raw_features, list):
+                        feature_names = []
+                        for feature in raw_features[:12]:
+                            name = _detail_text(feature) if isinstance(feature, dict) else str(feature).strip()
+                            if name:
+                                feature_names.append(name)
+                        if feature_names:
+                            result["features"] = ", ".join(feature_names)
                     break
         except Exception as e:
             logger.debug(f"_fetch_item_details {token}: {e}")
@@ -435,6 +463,10 @@ class Yad2Scraper:
                 listing["contact_name"] = details["contact_name"]
             if details.get("contact_phone"):
                 listing["contact_phone"] = details["contact_phone"]
+            if details.get("description"):
+                listing["description"] = details["description"]
+            if details.get("features"):
+                listing["features"] = details["features"]
         return listings
 
     async def _fetch_url(self, url: str) -> list[dict]:
@@ -675,6 +707,11 @@ class Yad2Scraper:
                 t["name"] for t in tags[:6]
                 if isinstance(t, dict) and t.get("name")
             )
+            description = (
+                _t(item.get("description") or {})
+                or _t(item.get("freeText") or {})
+                or _t(item.get("additionalInfo") or {})
+            )
 
             # Listing date — createdAt is the real publish time
             listing_date = (
@@ -704,7 +741,8 @@ class Yad2Scraper:
                 "horsepower":   horsepower,
                 "turbo":        turbo,
                 "test_date":    test_date,
-                "description":  features,
+                "description":  description,
+                "features":     features,
                 "contact_name": "",
                 "contact_phone": "",
                 "listing_date": listing_date,

@@ -10,8 +10,8 @@ Supabase project: `exydxtitrmqulahfomxj`
 ## How it works
 
 1. User creates an account on the website and sets up car searches (manufacturer, model, price range, year, km max).
-2. User sends `/start` in Telegram and provides their email to link accounts.
-3. The bot polls yad2 every 15 minutes and sends new matching listings.
+2. From the signed-in dashboard, the user clicks **Connect Telegram**. The site opens the bot with a one-time token that expires after 15 minutes.
+3. The bot polls yad2 every 15 minutes and sends only new matching listings.
 
 ### New-search baseline
 Within 60 seconds of a search being created, the bot records all currently matching listings in `seen_ids` without sending them. From that point on, the user receives only listings first discovered in a later poll.
@@ -28,7 +28,8 @@ If a listing the bot already sent changes price, it sends an alert with the old 
 
 ```
 website (Next.js)
-    └── creates/deletes searches in Supabase `searches` table
+    ├── creates/edits/pauses searches in Supabase `searches` table
+    └── creates short-lived Telegram linking tokens
           └── bot detects changes via polling (no webhooks)
 
 bot.py
@@ -40,7 +41,7 @@ bot.py
 │       └── steady state: sends new + price-changed listings
 │
 ├── welcome_new_searches()    runs every 60s (silent baseline seeding)
-│   ├── detects searches with empty seen_ids
+│   ├── detects searches with NULL seen_ids
 │   ├── detects deleted searches (stops polling within 60s)
 │   └── uses the same manufacturer fetch as poll to avoid baseline gaps
 │
@@ -51,6 +52,10 @@ bot.py
 ### Key state in Supabase `searches` table
 - `seen_ids` — array of yad2 listing tokens already sent to user (capped at 5000)
 - `seen_prices` — dict of `{listing_id: price}` for price-change tracking
+- `is_active` — whether the search is currently being scanned
+- `last_scanned_at`, `last_match_count`, `last_notified_at` — user-facing status
+
+Alerts include all details available from yad2: price, year, hand, km, ownership, engine, test date, city, equipment, seller notes and contact details. Each alert also has buttons to open the listing, pause its search, or manage searches on the website.
 
 ---
 
@@ -89,11 +94,10 @@ Logs go to `logs/bot.log` and stdout.
 
 | Command | Description |
 |---|---|
-| `/start` | Welcome message + link account by email |
+| `/start` | Welcome message or consume the secure link opened by the website |
 | `/my_searches` | List active searches with inline buttons |
 | `/check_now` | Manually trigger a poll for all searches |
-| `/status` | Show number of linked users and searches |
-| `/cancel` | Cancel the current conversational step |
+| `/status` | Show personal tracking status, active-search count and last scan |
 | `/clear_history` | Reset the baseline; existing listings are silently seeded again |
 | `/logs` | Admin only: show last 60 log lines (filtered) |
 | `/debug_now` | Admin only: test yad2 connectivity |
@@ -104,6 +108,11 @@ Logs go to `logs/bot.log` and stdout.
 ## Deployment
 
 The bot runs as a single process on Aral's Mac. No Docker, no cloud hosting.
+
+### Required database migration
+
+Before restarting this version, apply the website migration
+`supabase/migrations/0004_ux_and_telegram_linking.sql` in the Supabase SQL Editor. It adds secure Telegram linking, pause/status fields, and resets legacy empty baselines so existing listings are silently recorded instead of sent.
 
 ### One-time setup (recommended): auto-restart via launchd
 
@@ -129,6 +138,8 @@ git pull origin main
 launchctl kickstart -k "gui/$(id -u)/com.carconnoisseur.yad2bot"   # if installed via launchd
 # or, if still running manually: kill existing process, then `python bot.py`
 ```
+
+Apply the database migration first, then pull and restart the bot.
 
 ### Conflict (409) prevention
 Only one instance should run at a time. If a 409 appears, find and kill duplicate processes:

@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
 Yad2 Car Search Telegram Bot
-Searches are created on the website; the bot links users by email and sends alerts.
+Searches are created on the website; the bot links users with a one-time token and sends alerts.
 """
+
+from __future__ import annotations
 
 import asyncio
 import io
@@ -20,8 +22,6 @@ from telegram.ext import (
     Application,
     CommandHandler,
     CallbackQueryHandler,
-    MessageHandler,
-    filters,
     ContextTypes,
 )
 
@@ -57,10 +57,6 @@ def _safe(s) -> str:
     """Strip Markdown-special chars from dynamic content (titles, cities, trims)."""
     return str(s or "").replace("*", "").replace("_", "").replace("`", "").replace("[", "").replace("]", "")
 
-# context.user_data key: True = waiting for user to type their email
-WAITING_EMAIL = "waiting_for_email"
-
-
 # ── /start ────────────────────────────────────────────────────────────────────
 
 SITE_URL = "https://carconnoisseur-web.vercel.app"
@@ -68,6 +64,35 @@ SITE_URL = "https://carconnoisseur-web.vercel.app"
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat_id = str(update.effective_chat.id)
+
+    # Secure one-click linking from the signed-in website.
+    if context.args and context.args[0].startswith("link_"):
+        token = context.args[0][len("link_"):].strip()
+        linked = await asyncio.to_thread(sb.link_telegram_token, chat_id, token)
+        if not linked:
+            await update.message.reply_text(
+                "❌ קישור החיבור אינו תקין או שפג תוקפו.\n\n"
+                "חזור לאתר ולחץ שוב על „פתח וחבר Telegram“ כדי לקבל קישור חדש.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🌐 חזרה לאתר", url=f"{SITE_URL}/dashboard")
+                ]]),
+            )
+            return
+
+        searches = await asyncio.to_thread(sb.get_searches, chat_id)
+        await update.message.reply_text(
+            "🎉 *החשבון חובר בהצלחה!*\n\n"
+            f"📧 {_safe(linked.get('email') or '')}\n"
+            f"🔍 {len(searches)} חיפושים פעילים\n\n"
+            "המודעות שכבר קיימות יסומנו כבסיס ולא יישלחו. "
+            "מעכשיו תקבל כאן רק מודעות חדשות שמתאימות לחיפושים שלך.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("⚙️ ניהול החיפושים", url=f"{SITE_URL}/dashboard")
+            ]]),
+        )
+        return
+
     profile = await asyncio.to_thread(sb.get_profile_by_chat, chat_id)
 
     if profile:
@@ -94,76 +119,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "בוט שסורק את יד2 כל 15 דקות ושולח לך התראה ישירות לטלגרם רק כשמתפרסמת מודעת רכב חדשה שמתאימה לחיפוש שלך.\n\n"
             "━━━━━━━━━━━━━━━\n"
             "*איך מתחילים?*\n\n"
-            "1️⃣ היכנס לאתר וצור חשבון חינם\n"
+            "1️⃣ היכנס לאתר וצור חשבון\n"
             "2️⃣ הגדר את החיפושים שלך\n"
-            "3️⃣ חזור לכאן ושלח לי את כתובת המייל שלך לחיבור החשבון\n\n"
+            "3️⃣ לחץ באתר על „פתח וחבר Telegram“\n\n"
             "👇 לחץ כדי לפתוח את האתר:",
             parse_mode="Markdown",
             reply_markup=keyboard,
         )
-        context.user_data[WAITING_EMAIL] = True
-        await update.message.reply_text(
-            "📧 *שלח לי את המייל שלך* כדי לחבר את החשבון:",
-            parse_mode="Markdown",
-        )
-
-
-# ── Handle email input ────────────────────────────────────────────────────────
-
-async def handle_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get(WAITING_EMAIL):
-        return  # not waiting for email — ignore
-
-    email = update.message.text.strip().lower()
-    chat_id = str(update.effective_chat.id)
-
-    if "@" not in email or "." not in email:
-        await update.message.reply_text(
-            "❌ זה לא נראה כמו כתובת מייל תקינה. נסה שוב:"
-        )
-        return
-
-    await update.message.reply_text("🔄 מחפש את החשבון...")
-
-    found = await asyncio.to_thread(sb.link_email, chat_id, email)
-    if not found:
-        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🌐 הרשם לאתר", url=SITE_URL)
-        ]])
-        await update.message.reply_text(
-            f"❌ לא נמצא חשבון עם המייל *{email}*\n\n"
-            "ייתכן שעדיין לא נרשמת לאתר, או שהמייל שגוי.\n\n"
-            "👇 הירשם באתר ואז חזור ושלח שוב את המייל:",
-            parse_mode="Markdown",
-            reply_markup=keyboard,
-        )
-        return
-
-    context.user_data[WAITING_EMAIL] = False
-
-    searches = await asyncio.to_thread(sb.get_searches, chat_id)
-    count = len(searches)
-    count_str = f"{count} חיפושים" if count != 1 else "חיפוש אחד"
-    await update.message.reply_text(
-        "🎉 *החשבון חובר בהצלחה!*\n\n"
-        f"📧 {email}\n"
-        f"🔍 נמצאו {count_str} פעילים\n\n"
-        "המודעות שכבר קיימות יסומנו אוטומטית, ולא יישלחו אליך.\n"
-        "מעכשיו תקבל כאן רק מודעות חדשות שיתפרסמו לאחר החיבור.\n\n"
-        "━━━━━━━━━━━━━━━\n"
-        "לניהול חיפושים נוספים — היכנס לאתר:\n"
-        f"{SITE_URL}",
-        parse_mode="Markdown",
-    )
-
-
-async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Cancel the current conversational step without changing saved searches."""
-    if context.user_data.pop(WAITING_EMAIL, None):
-        await update.message.reply_text("✅ בוטל. אפשר להתחיל שוב בכל רגע עם /start.")
-    else:
-        await update.message.reply_text("אין כרגע פעולה שממתינה לביטול.")
 
 
 # ── /my_searches ──────────────────────────────────────────────────────────────
@@ -173,9 +135,11 @@ async def my_searches(update: Update, context: ContextTypes.DEFAULT_TYPE):
     profile = await asyncio.to_thread(sb.get_profile_by_chat, chat_id)
 
     if not profile:
-        context.user_data[WAITING_EMAIL] = True
         await update.message.reply_text(
-            "⚠️ חשבונך אינו מחובר עדיין.\n\nשלח לי את כתובת המייל שלך:"
+            "⚠️ החשבון עדיין לא מחובר.\n\nהיכנס לאתר ולחץ על „פתח וחבר Telegram“.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🌐 חיבור דרך האתר", url=f"{SITE_URL}/dashboard")
+            ]]),
         )
         return
 
@@ -190,6 +154,7 @@ async def my_searches(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = []
     for s in searches:
         keyboard.append([InlineKeyboardButton(f"🔍 {s['name']}", callback_data=f"view_{s['id']}")])
+    keyboard.append([InlineKeyboardButton("⚙️ עריכה, השהיה וחיפוש חדש", url=f"{SITE_URL}/dashboard")])
     await update.message.reply_text(
         f"📋 *החיפושים שלך* ({len(searches)}):",
         parse_mode="Markdown",
@@ -224,12 +189,18 @@ async def view_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"🛣 ק\"מ מקס': {s['km_max']:,}")
     seen = len(s.get("seen_ids") or [])
     lines.append(f"\n👁 מודעות שנראו: {seen}")
+    if s.get("last_scanned_at"):
+        lines.append(f"🕐 סריקה אחרונה: {_safe(s['last_scanned_at'][:16].replace('T', ' '))}")
 
     keyboard = [
         [
             InlineKeyboardButton("🔄 בדוק עכשיו", callback_data=f"chk_{sid}"),
+            InlineKeyboardButton("⏸️ השהה", callback_data=f"pause_{sid}"),
         ],
-        [InlineKeyboardButton("« חזרה", callback_data="back_to_list")],
+        [
+            InlineKeyboardButton("« חזרה", callback_data="back_to_list"),
+            InlineKeyboardButton("⚙️ עריכה באתר", url=f"{SITE_URL}/dashboard"),
+        ],
     ]
     await query.edit_message_text(
         "\n".join(lines), parse_mode="Markdown",
@@ -255,13 +226,14 @@ async def check_single(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sent_ids = []
         for listing in new_listings:
             try:
-                await send_listing(context.bot, int(chat_id), listing, s["name"], is_welcome=was_first_run)
+                await send_listing(context.bot, int(chat_id), listing, s["name"], s["id"], is_welcome=was_first_run)
                 sent_ids.append(listing["id"])
             except Exception as se:
                 logger.error(f"send failed {listing['id']} → {chat_id}: {se}")
         if sent_ids:
             sent_prices = {l["id"]: l["price"] for l in new_listings if l["id"] in sent_ids and l.get("price") is not None}
             await asyncio.to_thread(sb.mark_seen, s["id"], sent_ids, None, sent_prices)
+            await asyncio.to_thread(sb.mark_notified, s["id"])
             await context.bot.send_message(int(chat_id), f"✅ נשלחו {len(sent_ids)} מודעות חדשות!")
         else:
             await context.bot.send_message(int(chat_id), "⚠️ נמצאו מודעות, אך לא הצלחתי לשלוח אותן. אנסה שוב בסריקה הבאה.")
@@ -278,10 +250,35 @@ async def back_to_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("📭 אין חיפושים שמורים.")
         return
     keyboard = [[InlineKeyboardButton(f"🔍 {s['name']}", callback_data=f"view_{s['id']}")] for s in searches]
+    keyboard.append([InlineKeyboardButton("⚙️ ניהול באתר", url=f"{SITE_URL}/dashboard")])
     await query.edit_message_text(
         f"📋 *החיפושים שלך* ({len(searches)}):",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+async def pause_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Pause an active search directly from a listing notification."""
+    query = update.callback_query
+    search_id = query.data.replace("pause_", "", 1)
+    chat_id = str(query.message.chat_id)
+    paused = await asyncio.to_thread(sb.pause_search_for_chat, search_id, chat_id)
+    if not paused:
+        await query.answer("לא הצלחתי להשהות את החיפוש", show_alert=True)
+        return
+    await query.answer("החיפוש הושהה")
+    await query.edit_message_reply_markup(
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("⚙️ ניהול והפעלה מחדש", url=f"{SITE_URL}/dashboard")
+        ]])
+    )
+    await context.bot.send_message(
+        int(chat_id),
+        "⏸️ החיפוש הושהה ולא ישלח התראות נוספות. אפשר להפעיל אותו מחדש באתר בכל רגע.",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("⚙️ מעבר לחיפושים", url=f"{SITE_URL}/dashboard")
+        ]]),
     )
 
 
@@ -291,8 +288,12 @@ async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
     profile = await asyncio.to_thread(sb.get_profile_by_chat, chat_id)
     if not profile:
-        context.user_data[WAITING_EMAIL] = True
-        await update.message.reply_text("⚠️ חשבונך אינו מחובר. שלח לי את המייל שלך:")
+        await update.message.reply_text(
+            "⚠️ החשבון עדיין לא מחובר. החיבור מתבצע בלחיצה אחת מתוך האתר.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🌐 חיבור דרך האתר", url=f"{SITE_URL}/dashboard")
+            ]]),
+        )
         return
 
     searches = await asyncio.to_thread(sb.get_searches, chat_id)
@@ -309,7 +310,7 @@ async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sent_ids = []
             for listing in new_listings[:15]:
                 try:
-                    await send_listing(context.bot, int(chat_id), listing, s["name"], is_welcome=was_first_run)
+                    await send_listing(context.bot, int(chat_id), listing, s["name"], s["id"], is_welcome=was_first_run)
                     sent_ids.append(listing["id"])
                     total += 1
                 except Exception as se:
@@ -318,6 +319,7 @@ async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if sent_ids:
                 sent_prices = {l["id"]: l["price"] for l in new_listings if l["id"] in sent_ids and l.get("price") is not None}
                 await asyncio.to_thread(sb.mark_seen, s["id"], sent_ids, None, sent_prices)
+                await asyncio.to_thread(sb.mark_notified, s["id"])
         except Exception as e:
             logger.error(f"check_now error for {s['id']}: {e}", exc_info=True)
             failed += 1
@@ -373,6 +375,7 @@ async def _process_search_with_listings(bot, chat_id: str, search: dict, all_lis
                 price_map if matching else None, seen_prices,
                 True,  # force_write
             )
+            await asyncio.to_thread(sb.update_search_status, sid, len(matching))
             logger.info(f"First run {sid}: seeded {len(matching)} existing listings; sent 0")
             return
 
@@ -441,7 +444,7 @@ async def _process_search_with_listings(bot, chat_id: str, search: dict, all_lis
         sent_ids = []
         for listing in to_send:
             try:
-                await send_listing(bot, int(chat_id), listing, search["name"])
+                await send_listing(bot, int(chat_id), listing, search["name"], search["id"])
                 sent_ids.append(listing["id"])
             except Exception as e:
                 logger.error(f"send failed {listing['id']} → {chat_id}: {e}")
@@ -451,6 +454,7 @@ async def _process_search_with_listings(bot, chat_id: str, search: dict, all_lis
                 if l["id"] in sent_ids and l.get("price") is not None
             }
             await asyncio.to_thread(sb.mark_seen, sid, sent_ids, None, sent_prices)
+        await asyncio.to_thread(sb.update_search_status, sid, len(matching), bool(sent_ids))
 
 
 async def poll_all_searches(context: ContextTypes.DEFAULT_TYPE):
@@ -507,7 +511,7 @@ async def poll_all_searches(context: ContextTypes.DEFAULT_TYPE):
             sent_ids = []
             for listing in new_listings:
                 try:
-                    await send_listing(context.bot, int(chat_id), listing, s["name"], is_welcome=was_first_run)
+                    await send_listing(context.bot, int(chat_id), listing, s["name"], s["id"], is_welcome=was_first_run)
                     sent_ids.append(listing["id"])
                     logger.info(f"Sent {listing['id']} to {chat_id}")
                 except Exception as e:
@@ -518,6 +522,7 @@ async def poll_all_searches(context: ContextTypes.DEFAULT_TYPE):
                     if l["id"] in sent_ids and l.get("price") is not None
                 }
                 await asyncio.to_thread(sb.mark_seen, s["id"], sent_ids, None, sent_prices)
+                await asyncio.to_thread(sb.mark_notified, s["id"])
 
         tasks = [_fetch_and_process_mfr(mfr, group) for mfr, group in by_mfr.items()]
         tasks += [_process_no_mfr(chat_id, s) for chat_id, s in no_mfr]
@@ -574,6 +579,9 @@ async def _fetch_new(search: dict) -> tuple[list, bool, list[str]]:
 
         async with _poll_sem:
             listings, yad2_responded = await scraper.fetch_listings(search, seen_ids=seen)
+
+        if yad2_responded:
+            await asyncio.to_thread(sb.update_search_status, sid, len(listings))
 
         price_map = {l["id"]: l["price"] for l in listings if l.get("price") is not None}
 
@@ -645,7 +653,14 @@ async def _fetch_new(search: dict) -> tuple[list, bool, list[str]]:
 
 # ── send_listing ──────────────────────────────────────────────────────────────
 
-async def send_listing(bot, chat_id: int, listing: dict, search_name: str, is_welcome: bool = False):
+async def send_listing(
+    bot,
+    chat_id: int,
+    listing: dict,
+    search_name: str,
+    search_id: str | None = None,
+    is_welcome: bool = False,
+):
     title       = listing.get("title") or "רכב"
     trim        = listing.get("trim") or ""
     price       = listing.get("price")
@@ -660,6 +675,7 @@ async def send_listing(bot, chat_id: int, listing: dict, search_name: str, is_we
     turbo       = listing.get("turbo", False)
     test_date   = listing.get("test_date") or ""
     description = listing.get("description") or ""
+    features    = listing.get("features") or ""
     contact_phone = listing.get("contact_phone") or ""
     contact_name  = listing.get("contact_name") or ""
     photo_url   = listing.get("photo_url")
@@ -668,16 +684,17 @@ async def send_listing(bot, chat_id: int, listing: dict, search_name: str, is_we
     if trim:
         header += f" | {_safe(trim)}"
 
-    engine_str = ""
+    engine_parts = []
     if engine_cc:
         liters = round(engine_cc / 1000, 1)
-        engine_str = str(liters)
-        if engine_type:
-            engine_str += f" {_safe(engine_type)}"
-        if turbo:
-            engine_str += " טורבו"
-        if horsepower:
-            engine_str += f" ({horsepower} כ\"ס)"
+        engine_parts.append(f"{liters} ל׳")
+    if engine_type:
+        engine_parts.append(_safe(engine_type))
+    if turbo:
+        engine_parts.append("טורבו")
+    if horsepower:
+        engine_parts.append(f"{horsepower} כ\"ס")
+    engine_str = " · ".join(engine_parts)
 
     price_change = listing.get("_price_change")
     if price_change:
@@ -690,41 +707,56 @@ async def send_listing(bot, chat_id: int, listing: dict, search_name: str, is_we
 
     if price_change:
         listing_header = "🔄 *עודכן מחיר!*"
-    elif is_welcome:
-        listing_header = "📋 *מודעה אחרונה*"
     else:
-        listing_header = "🚗 *מודעה חדשה!*"
+        listing_header = "🚗 *מודעה חדשה*"
 
     lines = [
         listing_header,
-        header,
-        f"🔹 שנה: {year}",
-        f"🔹 יד: {_safe(hand_text)}",
-        f"🔹 בעלות: {_safe(ownership)}",
-        f"🔹 קילומטראז': {km:,} ק\"מ" if km is not None else "🔹 קילומטראז': —",
+        f"*{header}*",
     ]
-    if engine_str:
-        lines.append(f"🔹 נפח מנוע: {engine_str}")
-    if test_date:
-        lines.append(f"🔹 טסט עד: {_safe(test_date)}")
     if price_change:
         lines.append(price_header)
     else:
-        lines.append(f"💰 מחיר מבוקש: {price:,} ₪" if price else "💰 מחיר: לא צוין")
+        lines.append(f"💰 *{price:,} ₪*" if price else "💰 מחיר לא צוין")
+
+    lines.extend([
+        "━━━━━━━━━━━━━━",
+        f"📅 שנה: {year}",
+        f"✋ יד: {_safe(hand_text)}",
+        f"🛣️ קילומטראז׳: {km:,} ק\"מ" if km is not None else "🛣️ קילומטראז׳: לא צוין",
+        f"🏷️ בעלות: {_safe(ownership)}",
+    ])
+    if engine_str:
+        lines.append(f"⚙️ מנוע: {engine_str}")
+    if test_date:
+        lines.append(f"🧪 טסט עד: {_safe(test_date)}")
     lines.append(f"📍 אזור מכירה: {_safe(city)}")
-    if description:
-        lines.append(f"✨ תוספות: {_safe(description)}")
     if contact_phone:
         contact_line = f"📞 {_safe(contact_phone)}"
         if contact_name:
             contact_line += f" {_safe(contact_name)}"
         lines.append(contact_line)
+    lines.append(f"🔎 חיפוש: {_safe(search_name)}")
+
+    listing_dt = scraper._parse_listing_date(listing.get("listing_date"))
+    if listing_dt:
+        lines.append(f"🕐 פורסמה: {listing_dt.strftime('%d/%m/%Y %H:%M')}")
+    # Optional free text stays last so Telegram's photo-caption limit never hides
+    # the mandatory vehicle facts, seller contact or the originating search.
+    if features:
+        lines.append(f"✨ תוספות: {_safe(features)[:220]}")
+    if description:
+        lines.append(f"📝 הערות המוכר: {_safe(description)[:240]}")
 
     text = "\n".join(l for l in lines if l is not None)
     if len(text) > 1020:
         text = text[:1020] + "..."
 
-    keyboard = [[InlineKeyboardButton("🔗 למעבר למודעה המקורית לחץ כאן", url=listing["url"])]]
+    keyboard = [[InlineKeyboardButton("🔗 פתיחת המודעה ביד2", url=listing["url"])]]
+    actions = [InlineKeyboardButton("⚙️ ניהול באתר", url=f"{SITE_URL}/dashboard")]
+    if search_id:
+        actions.insert(0, InlineKeyboardButton("⏸️ השהה חיפוש", callback_data=f"pause_{search_id}"))
+    keyboard.append(actions)
     markup = InlineKeyboardMarkup(keyboard)
 
     if photo_url:
@@ -761,7 +793,6 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "*/my\\_searches* – החיפושים שלי\n"
         "*/check\\_now* – בדוק עכשיו\n"
         "*/status* – סטטוס הבוט\n"
-        "*/cancel* – בטל את הפעולה הנוכחית\n"
         "*/clear\\_history* – אפס את נקודת ההתחלה של המעקב\n\n"
         f"⏱ הבוט בודק אוטומטית כל *{config.POLL_INTERVAL_MINUTES}* דקות.\n"
         "🌐 חיפושים מנוהלים באתר: carconnoisseur-web.vercel.app",
@@ -770,17 +801,28 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    profiles = await asyncio.to_thread(sb.get_all_linked_profiles)
-    total = 0
-    for p in profiles:
-        searches = await asyncio.to_thread(sb.get_searches, p["telegram_chat_id"])
-        total += len(searches)
+    chat_id = str(update.effective_chat.id)
+    profile = await asyncio.to_thread(sb.get_profile_by_chat, chat_id)
+    if not profile:
+        await update.message.reply_text(
+            "⚠️ החשבון עדיין לא מחובר.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🌐 חיבור דרך האתר", url=f"{SITE_URL}/dashboard")
+            ]]),
+        )
+        return
+    searches = await asyncio.to_thread(sb.get_searches, chat_id)
+    scanned = [s.get("last_scanned_at") for s in searches if s.get("last_scanned_at")]
+    last_scan = max(scanned)[:16].replace("T", " ") if scanned else "עדיין לא בוצעה"
     await update.message.reply_text(
-        f"✅ *הבוט פעיל*\n\n"
-        f"👥 משתמשים מחוברים: {len(profiles)}\n"
-        f"🔍 סה\"כ חיפושים: {total}\n"
-        f"⏱ סריקה כל {config.POLL_INTERVAL_MINUTES} דקות",
+        "✅ *המעקב שלך פעיל*\n\n"
+        f"🔍 חיפושים פעילים: {len(searches)}\n"
+        f"🕐 סריקה אחרונה: {_safe(last_scan)}\n"
+        f"⏱ תדירות: כל {config.POLL_INTERVAL_MINUTES} דקות",
         parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("⚙️ ניהול החיפושים", url=f"{SITE_URL}/dashboard")
+        ]]),
     )
 
 
@@ -1021,7 +1063,7 @@ async def admin_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await asyncio.to_thread(_do_reset)
     await update.message.reply_text(
         f"✅ אופסו {len(searches)} חיפושים עבור {email}\n"
-        "הבוט ישלח את המודעות האחרונות בסריקה הבאה."
+        "בסריקה הבאה המודעות הקיימות יסומנו מחדש כבסיס ולא יישלחו."
     )
 
 
@@ -1046,7 +1088,6 @@ async def _post_init(application):
         BotCommand("check_now", "בדיקת מודעות עכשיו"),
         BotCommand("status", "מצב הבוט"),
         BotCommand("help", "עזרה ופקודות"),
-        BotCommand("cancel", "ביטול הפעולה הנוכחית"),
     ])
 
 
@@ -1064,7 +1105,6 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(CommandHandler("cancel", cancel_cmd))
     app.add_handler(CommandHandler("my_searches", my_searches))
     app.add_handler(CommandHandler("check_now", check_now))
     app.add_handler(CommandHandler("clear_history", clear_history))
@@ -1077,8 +1117,8 @@ def main():
     app.add_handler(CommandHandler("admin_reset", admin_reset))
     app.add_handler(CallbackQueryHandler(view_search, pattern="^view_"))
     app.add_handler(CallbackQueryHandler(check_single, pattern="^chk_"))
+    app.add_handler(CallbackQueryHandler(pause_search, pattern="^pause_"))
     app.add_handler(CallbackQueryHandler(back_to_list, pattern="^back_to_list$"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_email))
     app.add_error_handler(_error_handler)
 
     interval = config.POLL_INTERVAL_MINUTES * 60

@@ -24,6 +24,8 @@ The code is already prepared for this migration — no code changes are needed f
 
 4. **Supabase project**: `exydxtitrmqulahfomxj` — this is the yad2-bot Supabase instance, separate from any other Supabase projects Ido may have.
 
+5. **Secure linking only**: Telegram accounts are linked through a short-lived, one-time website token. Do not restore the old flow that accepted a typed email address in Telegram.
+
 ---
 
 ## Architecture summary
