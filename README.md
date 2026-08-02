@@ -13,8 +13,8 @@ Supabase project: `exydxtitrmqulahfomxj`
 2. User sends `/start` in Telegram and provides their email to link accounts.
 3. The bot polls yad2 every 15 minutes and sends new matching listings.
 
-### Welcome batch (new search)
-Within 60 seconds of a search being created, the bot sends up to 10 recent listings from the past 7 days, sorted oldest→newest. Each listing is labeled **"מודעה אחרונה"** so the user knows these aren't brand-new.
+### New-search baseline
+Within 60 seconds of a search being created, the bot records all currently matching listings in `seen_ids` without sending them. From that point on, the user receives only listings first discovered in a later poll.
 
 ### Ongoing alerts
 Every 15 minutes the bot checks for genuinely new listings (not previously seen). These are labeled **"מודעה חדשה!"**.
@@ -36,13 +36,13 @@ bot.py
 │   ├── groups searches by manufacturer
 │   ├── one yad2 fetch per manufacturer (avoids duplicate requests)
 │   └── _process_search_with_listings() per search
-│       ├── first run: seeds ALL matching as seen, sends top 10
+│       ├── first run: silently seeds ALL matching as seen
 │       └── steady state: sends new + price-changed listings
 │
-├── welcome_new_searches()    runs every 60s
+├── welcome_new_searches()    runs every 60s (silent baseline seeding)
 │   ├── detects searches with empty seen_ids
 │   ├── detects deleted searches (stops polling within 60s)
-│   └── sends welcome batch via same manufacturer fetch as poll
+│   └── uses the same manufacturer fetch as poll to avoid baseline gaps
 │
 └── _fetch_new()              used for no-manufacturer searches
     └── search-specific yad2 URL with model/price/year filters
@@ -93,10 +93,11 @@ Logs go to `logs/bot.log` and stdout.
 | `/my_searches` | List active searches with inline buttons |
 | `/check_now` | Manually trigger a poll for all searches |
 | `/status` | Show number of linked users and searches |
-| `/clear_history` | Reset seen_ids so the bot re-sends recent listings |
-| `/logs` | Show last 60 log lines (filtered) |
-| `/debug_now` | Test yad2 connectivity |
-| `/debug_search` | Show Supabase data + yad2 URL for first search |
+| `/cancel` | Cancel the current conversational step |
+| `/clear_history` | Reset the baseline; existing listings are silently seeded again |
+| `/logs` | Admin only: show last 60 log lines (filtered) |
+| `/debug_now` | Admin only: test yad2 connectivity |
+| `/debug_search` | Admin only: show Supabase data + yad2 URL for first search |
 
 ---
 

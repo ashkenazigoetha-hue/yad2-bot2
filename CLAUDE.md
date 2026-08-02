@@ -16,7 +16,7 @@ The code is already prepared for this migration — no code changes are needed f
 
 ## Critical rules — do NOT change these behaviors
 
-1. **First-run "burn"**: When a new search is created, the bot seeds ALL current yad2 listings as `seen_ids` and sends only the 10 most recent (labeled "מודעה אחרונה"). This is intentional — the user only gets alerts for listings posted AFTER their search was created. Do not change this.
+1. **First-run "burn"**: When a new search is created, the bot silently seeds ALL current yad2 listings as `seen_ids` and sends none of them. This is intentional — the user only gets alerts for listings posted AFTER their search was created. Do not reintroduce a welcome batch of old listings.
 
 2. **Mark seen AFTER send**: Listings that will be sent to users must be marked as `seen_ids` only AFTER successful delivery. Marking before send means a failed send permanently loses that listing.
 
@@ -29,7 +29,7 @@ The code is already prepared for this migration — no code changes are needed f
 ## Architecture summary
 
 - `poll_all_searches()` — runs every 15 min. Groups searches by manufacturer, fetches yad2 **once per manufacturer** (not once per search). This keeps yad2 request count low at scale (100 users × 30 searches → ~50 yad2 fetches instead of 3000).
-- `welcome_new_searches()` — runs every 60s. Handles new searches (seen_ids is NULL) and detects deleted searches.
+- `welcome_new_searches()` — runs every 60s. Silently seeds new searches (seen_ids is NULL) and detects deleted searches.
 - `_process_search_with_listings()` — filters a pre-fetched manufacturer listing set for one specific search, sends new/price-changed listings.
 - `_fetch_new()` — used only for searches with no manufacturer (can't be grouped).
 
@@ -42,7 +42,7 @@ These commands are only available to chat IDs listed in `ADMIN_CHAT_IDS` env var
 | Command | Usage |
 |---|---|
 | `/admin_debug <email>` | Show profile, searches, seen_ids count for a user |
-| `/admin_reset <email>` | Reset seen_ids to NULL — triggers welcome batch re-run |
+| `/admin_reset <email>` | Reset seen_ids to NULL — triggers silent baseline seeding again |
 | `/my_id` | Show your own Telegram chat_id (anyone can use this) |
 
 ---
