@@ -6,7 +6,7 @@ This file is read automatically by Claude Code. It describes the project context
 
 ## Where the bot runs
 
-**Currently**: Aral's MacBook laptop (`python bot.py` in terminal, must be left open).
+**Currently**: Aral's MacBook laptop. Previously run manually as `python bot.py` in an open terminal — this caused silent, unnoticed downtime (bot died whenever the terminal closed, the laptop slept, or it restarted; no restart/alert). As of the `install_mac_launchagent.sh` script, it should instead run as a macOS `launchd` LaunchAgent (`com.carconnoisseur.yad2bot`) — starts on login, restarts automatically on crash. Confirm with Aral that he's actually run the installer before assuming this is active.
 
 **In progress**: Migrating to a dedicated **GMKtec G5 Mini PC** (Intel N97, 12GB RAM, 256GB SSD) so the bot runs 24/7 without depending on the laptop. The mini PC will run the bot as a `systemd` service on Ubuntu (or via WSL2 on Windows 11 Pro which comes pre-installed).
 

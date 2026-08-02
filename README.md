@@ -104,12 +104,29 @@ Logs go to `logs/bot.log` and stdout.
 
 The bot runs as a single process on Aral's Mac. No Docker, no cloud hosting.
 
+### One-time setup (recommended): auto-restart via launchd
+
+Running `python bot.py` manually in an open terminal means the bot silently
+dies the moment the terminal closes, the Mac sleeps/restarts, or Aral logs
+out — with no alert. Instead, install it as a background service that
+launchd keeps alive and restarts automatically on crash or reboot:
+
 ```bash
-# Pull latest and restart
+cd /path/to/yad2-bot2
+bash install_mac_launchagent.sh
+```
+
+Run this once. After that, the bot is always running in the background —
+no terminal needs to stay open. See the script's own output for status/log/
+stop commands, or `launchctl print gui/$(id -u)/com.carconnoisseur.yad2bot`.
+
+### Updating after a code change
+
+```bash
 cd /path/to/yad2-bot2
 git pull origin main
-# kill existing process, then:
-python bot.py
+launchctl kickstart -k "gui/$(id -u)/com.carconnoisseur.yad2bot"   # if installed via launchd
+# or, if still running manually: kill existing process, then `python bot.py`
 ```
 
 ### Conflict (409) prevention
