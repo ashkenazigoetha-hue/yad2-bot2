@@ -42,6 +42,10 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger(__name__)
+# httpx INFO lines include full request URLs. Telegram URLs contain the bot
+# token, so dependency request logging must never be written to bot.log.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 config = Config()
 sb = SupabaseManager()
@@ -96,6 +100,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     profile = await asyncio.to_thread(sb.get_profile_by_chat, chat_id)
 
     if profile:
+        access = await asyncio.to_thread(sb.get_access_by_chat, chat_id)
+        if access and not access.get("allowed"):
+            blocked = access.get("state") == "blocked"
+            reason = access.get("blocked_reason")
+            await update.message.reply_text(
+                ("🔒 *הגישה לחשבון נעצרה*" if blocked else "⏳ *תקופת הניסיון הסתיימה*")
+                + "\n\n"
+                + (_safe(reason) if blocked and reason else "החיפושים נשמרו, אך הסריקות וההתראות מושהות כרגע.")
+                + "\n\nאפשר לפנות אלינו דרך האתר כדי לחדש את הגישה.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🌐 מעבר לאתר", url=f"{SITE_URL}/access")
+                ]]),
+            )
+            return
         searches = await asyncio.to_thread(sb.get_searches, chat_id)
         count = len(searches)
         count_str = f"{count} חיפושים פעילים" if count != 1 else "חיפוש פעיל אחד"
@@ -139,6 +158,17 @@ async def my_searches(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⚠️ החשבון עדיין לא מחובר.\n\nהיכנס לאתר ולחץ על „פתח וחבר Telegram“.",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🌐 חיבור דרך האתר", url=f"{SITE_URL}/dashboard")
+            ]]),
+        )
+        return
+
+    access = await asyncio.to_thread(sb.get_access_by_chat, chat_id)
+    if access and not access.get("allowed"):
+        await update.message.reply_text(
+            "🔒 החיפושים שלך שמורים, אבל הגישה וההתראות מושהות כרגע.\n\n"
+            "אפשר לפנות אלינו דרך האתר לחידוש הגישה.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🌐 מעבר לאתר", url=f"{SITE_URL}/access")
             ]]),
         )
         return
@@ -808,6 +838,21 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⚠️ החשבון עדיין לא מחובר.",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🌐 חיבור דרך האתר", url=f"{SITE_URL}/dashboard")
+            ]]),
+        )
+        return
+    access = await asyncio.to_thread(sb.get_access_by_chat, chat_id)
+    if access and not access.get("allowed"):
+        blocked = access.get("state") == "blocked"
+        reason = access.get("blocked_reason")
+        await update.message.reply_text(
+            ("🔒 *הגישה לחשבון נעצרה*" if blocked else "⏳ *תקופת הניסיון הסתיימה*")
+            + "\n\n"
+            + (_safe(reason) if blocked and reason else "הסריקות וההתראות מושהות, אבל החיפושים שלך נשמרו.")
+            + "\n\nלחידוש הגישה אפשר לפנות אלינו דרך האתר.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🌐 מעבר לאתר", url=f"{SITE_URL}/access")
             ]]),
         )
         return

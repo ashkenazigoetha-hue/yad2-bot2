@@ -51,6 +51,17 @@ def _install_dependency_stubs():
     sys.modules.setdefault("curl_cffi", curl_cffi)
     sys.modules.setdefault("curl_cffi.requests", curl_requests)
 
+    playwright = types.ModuleType("playwright")
+    playwright_async = types.ModuleType("playwright.async_api")
+    playwright_async.async_playwright = lambda: None
+    playwright.async_api = playwright_async
+    sys.modules.setdefault("playwright", playwright)
+    sys.modules.setdefault("playwright.async_api", playwright_async)
+
+    playwright_stealth = types.ModuleType("playwright_stealth")
+    playwright_stealth.Stealth = object
+    sys.modules.setdefault("playwright_stealth", playwright_stealth)
+
     api = types.ModuleType("api")
     api.set_bot = lambda **kwargs: None
     api.start_api_thread = lambda *args, **kwargs: None
@@ -205,6 +216,38 @@ class TelegramLinkTests(unittest.TestCase):
             result = supabase_module.SupabaseManager().link_telegram_token("987", "not-a-token")
         self.assertIsNone(result)
         get_mock.assert_not_called()
+
+
+class AccountAccessTests(unittest.TestCase):
+    def test_blocked_profile_has_no_searches(self):
+        manager = supabase_module.SupabaseManager()
+
+        def fake_get(path, _params=None):
+            if path == "profiles":
+                return [{"id": "profile-1", "email": "user@example.com", "telegram_chat_id": "987"}]
+            if path == "user_access":
+                return [{"is_blocked": True, "blocked_reason": "test", "trial_ends_at": None, "access_exempt": False}]
+            if path == "searches":
+                self.fail("blocked accounts must not query searches")
+            return []
+
+        with patch.object(supabase_module, "_get", side_effect=fake_get):
+            self.assertEqual(manager.get_searches("987"), [])
+
+    def test_unlimited_profile_is_in_scheduled_scans(self):
+        manager = supabase_module.SupabaseManager()
+
+        def fake_get(path, params=None):
+            if path == "profiles":
+                return [{"id": "profile-1", "telegram_chat_id": "987"}]
+            if path == "user_access":
+                return [{"user_id": "profile-1", "is_blocked": False, "trial_ends_at": "2000-01-01T00:00:00+00:00", "access_exempt": True}]
+            if path == "searches":
+                return [{"id": "search-1", "is_active": True}]
+            return []
+
+        with patch.object(supabase_module, "_get", side_effect=fake_get):
+            self.assertEqual(manager.get_all_searches(), [("987", {"id": "search-1", "is_active": True})])
 
 
 if __name__ == "__main__":

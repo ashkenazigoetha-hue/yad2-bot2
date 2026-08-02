@@ -81,6 +81,10 @@ API_PORT=8080               # optional, default 8080
 PROXY_URL=                  # optional, e.g. http://user:pass@host:port
 ```
 
+The admin interface itself is served by the website. Its `ADMIN_EMAILS` and
+server-only Supabase secret must be configured in the website deployment, not
+in this bot's `.env`.
+
 ### Run
 ```bash
 python bot.py
@@ -111,8 +115,11 @@ The bot runs as a single process on Aral's Mac. No Docker, no cloud hosting.
 
 ### Required database migration
 
-Before restarting this version, apply the website migration
-`supabase/migrations/0004_ux_and_telegram_linking.sql` in the Supabase SQL Editor. It adds secure Telegram linking, pause/status fields, and resets legacy empty baselines so existing listings are silently recorded instead of sent.
+Before restarting this version, apply the website migrations through
+`supabase/migrations/0005_admin_console.sql` in the Supabase SQL Editor. Migration
+0005 adds blocking, trials and the admin audit log. The bot reads these access
+rules before every manual or scheduled scan, so blocked or expired accounts are
+not scanned.
 
 ### One-time setup (recommended): auto-restart via launchd
 

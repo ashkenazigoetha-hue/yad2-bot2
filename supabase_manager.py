@@ -36,7 +36,51 @@ def _patch(path: str, params: dict, body: dict) -> list:
     return r.json()
 
 
+def _evaluate_access(access: dict | None) -> dict:
+    if not access:
+        return {
+            "allowed": False,
+            "is_blocked": False,
+            "blocked_reason": None,
+            "trial_ends_at": None,
+            "access_exempt": False,
+            "state": "missing",
+        }
+
+    allowed = False
+    state = "expired"
+    if access.get("is_blocked"):
+        state = "blocked"
+    elif access.get("access_exempt"):
+        allowed = True
+        state = "active"
+    else:
+        try:
+            trial_ends_at = datetime.fromisoformat(str(access.get("trial_ends_at", "")).replace("Z", "+00:00"))
+            allowed = trial_ends_at > datetime.now(timezone.utc)
+            state = "active" if allowed else "expired"
+        except (ValueError, TypeError):
+            state = "expired"
+
+    return {**access, "allowed": allowed, "state": state}
+
+
 class SupabaseManager:
+    # ── Account access ────────────────────────────────────────────────────────
+
+    def get_user_access(self, profile_id: str) -> dict:
+        rows = _get(
+            "user_access",
+            {"user_id": f"eq.{profile_id}", "select": "is_blocked,blocked_reason,trial_ends_at,access_exempt"},
+        )
+        return _evaluate_access(rows[0] if rows else None)
+
+    def get_access_by_chat(self, chat_id: str) -> dict | None:
+        profile = self.get_profile_by_chat(chat_id)
+        if not profile:
+            return None
+        return self.get_user_access(profile["id"])
+
     # ── Profile / linking ─────────────────────────────────────────────────────
 
     def link_telegram_token(self, chat_id: str, token: str) -> dict | None:
@@ -95,13 +139,25 @@ class SupabaseManager:
         return rows[0] if rows else None
 
     def get_all_linked_profiles(self) -> list[dict]:
-        return _get("profiles", {"telegram_chat_id": "not.is.null", "select": "id,telegram_chat_id"})
+        profiles = _get("profiles", {"telegram_chat_id": "not.is.null", "select": "id,telegram_chat_id"})
+        access_rows = _get(
+            "user_access",
+            {"select": "user_id,is_blocked,blocked_reason,trial_ends_at,access_exempt"},
+        )
+        access_by_user = {row["user_id"]: row for row in access_rows}
+        return [
+            profile
+            for profile in profiles
+            if _evaluate_access(access_by_user.get(profile["id"]))["allowed"]
+        ]
 
     # ── Searches ──────────────────────────────────────────────────────────────
 
     def get_searches(self, chat_id: str, active_only: bool = True) -> list[dict]:
         profile = self.get_profile_by_chat(chat_id)
         if not profile:
+            return []
+        if not self.get_user_access(profile["id"])["allowed"]:
             return []
         params = {"user_id": f"eq.{profile['id']}", "select": "*"}
         if active_only:
