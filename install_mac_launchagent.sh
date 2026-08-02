@@ -41,6 +41,8 @@ fi
 source "$REPO_DIR/venv/bin/activate"
 pip install --upgrade pip -q
 pip install -r "$REPO_DIR/requirements.txt" -q
+echo "🌐 מתקין דפדפן Chromium ל-Playwright (עוקף את חסימת Radware של יד2)..."
+python3 -m playwright install chromium
 deactivate
 
 PYTHON_BIN="$REPO_DIR/venv/bin/python3"

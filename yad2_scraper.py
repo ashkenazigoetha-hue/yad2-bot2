@@ -1,6 +1,18 @@
 """
-Yad2 Scraper – curl-cffi mimics Chrome TLS fingerprint to bypass ShieldSquare.
-No headless browser needed.
+Yad2 Scraper.
+
+Yad2 protects its listing pages (/vehicles/cars, /item/*) with Radware Bot
+Manager, which serves a JS-challenge "Radware Page" on direct navigation and to
+plain HTTP clients (curl-cffi included) — they get HTTP 200 with no listings.
+
+Bypass: keep ONE real Chromium browser (headless=new + stealth) warmed on the
+yad2 homepage, which clears the Radware challenge. Listing HTML is then pulled
+via an in-page fetch() from that cleared, same-origin context (Radware does not
+re-challenge same-origin fetches). The parsed structure is unchanged, so all the
+_parse_* logic below is reused as-is.
+
+Images live on a separate CDN (images.yad2.co.il) that is NOT behind Radware, so
+photo downloads still use curl-cffi.
 """
 
 import asyncio
@@ -14,10 +26,21 @@ from typing import Optional
 from urllib.parse import urlencode
 
 from curl_cffi.requests import AsyncSession
+from playwright.async_api import async_playwright
+from playwright_stealth import Stealth
 
 logger = logging.getLogger(__name__)
 
 YAD2_SEARCH_URL = "https://www.yad2.co.il/vehicles/cars"
+YAD2_HOME_URL = "https://www.yad2.co.il/"
+
+# In-page fetch executed from the cleared yad2 origin. Returns the raw HTML text,
+# or a string starting with "FETCH_ERROR:" on a network-level failure.
+_IN_PAGE_FETCH_JS = (
+    "async (u) => { try { const r = await fetch(u, {credentials: 'include', "
+    "headers: {'accept': 'text/html'}}); return await r.text(); } "
+    "catch (e) { return 'FETCH_ERROR:' + String(e); } }"
+)
 
 # Rotate between Chrome versions so the TLS fingerprint varies per request
 CHROME_VERSIONS = [
@@ -219,6 +242,102 @@ class Yad2Scraper:
     def __init__(self):
         self._session: Optional[AsyncSession] = None
         self.consecutive_failures = 0  # reset on any successful fetch, incremented per full _fetch_url failure
+        # Persistent Radware-cleared browser (see module docstring).
+        self._stealth_cm = None
+        self._pw = None
+        self._browser = None
+        self._context = None
+        self._page = None
+        # Serialize all browser work: an in-page fetch and a re-warm (page.goto)
+        # must never overlap, since navigating away would break an in-flight fetch.
+        self._browser_lock = asyncio.Lock()
+
+    # ── Radware-cleared browser ──────────────────────────────────────────────
+    async def _launch_browser_locked(self):
+        """(Re)launch Chromium and warm it on the homepage. Caller must hold the lock."""
+        await self._safe_close_browser()
+        self._stealth_cm = Stealth().use_async(async_playwright())
+        self._pw = await self._stealth_cm.__aenter__()
+        self._browser = await self._pw.chromium.launch(
+            headless=False,  # headless is driven by the --headless=new arg below
+            args=[
+                "--headless=new",
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+            ],
+        )
+        self._context = await self._browser.new_context(
+            locale="he-IL",
+            viewport={"width": 1366, "height": 900},
+            user_agent=(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            ),
+        )
+        self._page = await self._context.new_page()
+        await self._warm_locked()
+        logger.info("Radware-cleared browser launched and warmed.")
+
+    async def _warm_locked(self):
+        """Load the homepage so Radware issues clearance cookies. Caller holds the lock."""
+        await self._page.goto(YAD2_HOME_URL, wait_until="domcontentloaded", timeout=45000)
+        await self._page.wait_for_timeout(6000)
+
+    async def _ensure_browser(self):
+        if self._page is not None and not self._page.is_closed():
+            return
+        async with self._browser_lock:
+            if self._page is not None and not self._page.is_closed():
+                return
+            await self._launch_browser_locked()
+
+    async def _safe_close_browser(self):
+        for closer in (
+            lambda: self._browser.close() if self._browser else None,
+            lambda: self._stealth_cm.__aexit__(None, None, None) if self._stealth_cm else None,
+        ):
+            try:
+                res = closer()
+                if res is not None:
+                    await res
+            except Exception:
+                pass
+        self._page = self._context = self._browser = self._pw = self._stealth_cm = None
+
+    async def _browser_fetch(self, url: str) -> str:
+        """Fetch listing HTML through the cleared browser, re-warming/relaunching on block.
+        Returns HTML text, or '' if it could not get past Radware."""
+        await self._ensure_browser()
+        for attempt in range(3):
+            async with self._browser_lock:
+                if self._page is None or self._page.is_closed():
+                    await self._launch_browser_locked()
+                try:
+                    html = await self._page.evaluate(_IN_PAGE_FETCH_JS, url)
+                except Exception as e:
+                    logger.warning(f"browser evaluate failed (attempt {attempt + 1}): {e} — relaunching")
+                    await self._launch_browser_locked()
+                    continue
+
+                blocked = (
+                    not html
+                    or html.startswith("FETCH_ERROR:")
+                    or "Radware Page" in html
+                    or "__NEXT_DATA__" not in html
+                )
+                if not blocked:
+                    return html
+
+                logger.warning(
+                    f"browser fetch blocked/empty (attempt {attempt + 1}) — re-warming session"
+                )
+                # First re-warm the session; if that already fails, relaunch fully next loop.
+                try:
+                    await self._warm_locked()
+                except Exception as e:
+                    logger.warning(f"re-warm failed: {e} — relaunching")
+                    await self._launch_browser_locked()
+        return ""
 
     async def _get_session(self) -> AsyncSession:
         if self._session is None:
@@ -370,16 +489,10 @@ class Yad2Scraper:
         """Fetch km, ownership, seller notes, features and contact info."""
         result = {}
         try:
-            session = await self._get_session()
-            r = await session.get(
-                f"https://www.yad2.co.il/item/{token}",
-                impersonate="chrome124",
-                headers={"Accept-Language": "he-IL,he;q=0.9"},
-                timeout=12,
-            )
-            if r.status_code != 200:
+            html = await self._browser_fetch(f"https://www.yad2.co.il/item/{token}")
+            if not html:
                 return result
-            nd = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', r.text, re.DOTALL)
+            nd = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
             if not nd:
                 return result
             data = json.loads(nd.group(1))
@@ -470,45 +583,17 @@ class Yad2Scraper:
         return listings
 
     async def _fetch_url(self, url: str) -> list[dict]:
-        # Retry up to 3 times with a fresh session on each block detection.
-        # Delays: 0s → 15s → 30s so transient yad2 blocks are resolved within the
-        # same 15-minute poll window instead of being silently skipped.
-        retry_delays = [0, 15, 30]
-        for attempt, delay in enumerate(retry_delays):
-            if delay:
-                logger.info(f"Retrying {url[:60]} in {delay}s (attempt {attempt + 1})...")
-                await asyncio.sleep(delay)
-            try:
-                session = await self._get_session()
-                impersonate = random.choice(CHROME_VERSIONS)
-                response = await session.get(
-                    url,
-                    impersonate=impersonate,
-                    headers={"Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8"},
-                    timeout=30,
-                )
-            except Exception as e:
-                logger.warning(f"_fetch_url request error (attempt {attempt + 1}): {e} — resetting session")
-                await self._reset_session()
-                continue
-
-            html = response.text
-            logger.info(f"yad2 fetch: url={url} status={response.status_code} len={len(html)} attempt={attempt + 1} impersonate={impersonate}")
-
-            if response.status_code == 200 and "__NEXT_DATA__" in html:
-                self.consecutive_failures = 0
-                return self._parse_page(html)
-
-            if response.status_code != 200:
-                logger.warning(f"Bad status: {response.status_code} (attempt {attempt + 1}) — resetting session")
-            elif "shieldsquare" in html.lower() or "captcha" in html.lower():
-                logger.warning(f"ShieldSquare/CAPTCHA detected (attempt {attempt + 1}) — resetting session")
-            else:
-                logger.warning(f"No __NEXT_DATA__ (attempt {attempt + 1}) — resetting session")
-            await self._reset_session()
+        """Fetch a listing page via the Radware-cleared browser and parse it."""
+        html = await self._browser_fetch(url)
+        if html and "__NEXT_DATA__" in html:
+            self.consecutive_failures = 0
+            logger.info(f"yad2 fetch OK: url={url} len={len(html)}")
+            return self._parse_page(html)
 
         self.consecutive_failures += 1
-        logger.error(f"_fetch_url failed after {len(retry_delays)} attempts (total consecutive={self.consecutive_failures}): {url[:80]}")
+        logger.error(
+            f"_fetch_url failed (Radware/empty, total consecutive={self.consecutive_failures}): {url[:80]}"
+        )
         return []
 
     async def fetch_listings(self, search: dict, seen_ids: set = None) -> tuple[list[dict], bool]:
@@ -790,14 +875,8 @@ class Yad2Scraper:
 
     async def debug_page(self) -> dict:
         try:
-            session = await self._get_session()
-            response = await session.get(
-                "https://www.yad2.co.il/vehicles/cars?manufacturer=56",
-                impersonate="chrome124",
-                headers={"Accept-Language": "he-IL,he;q=0.9"},
-                timeout=30,
-            )
-            html = response.text
+            url = "https://www.yad2.co.il/vehicles/cars?manufacturer=56"
+            html = await self._browser_fetch(url)
             nd_present = "__NEXT_DATA__" in html
             listings = self._parse_page(html) if nd_present else []
             title = re.search(r'<title>(.*?)</title>', html)
@@ -810,11 +889,11 @@ class Yad2Scraper:
                 sample_date = first.get("listing_date")
 
             return {
-                "status": response.status_code,
-                "url": str(response.url),
+                "status": 200 if html else 0,
+                "url": url,
                 "html_length": len(html),
                 "has_next_data": nd_present,
-                "is_captcha": "shieldsquare" in html.lower() and not nd_present,
+                "is_radware_blocked": ("Radware Page" in html) or (not html),
                 "listings_found": len(listings),
                 "title": title.group(1) if title else "N/A",
                 "sample_photo_url": sample_photo,
@@ -827,3 +906,5 @@ class Yad2Scraper:
     async def close(self):
         if self._session:
             await self._session.close()
+        async with self._browser_lock:
+            await self._safe_close_browser()
