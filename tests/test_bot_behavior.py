@@ -69,6 +69,7 @@ def _install_dependency_stubs():
 
 
 os.environ.setdefault("TELEGRAM_TOKEN", "test-token")
+os.environ.setdefault("SUPABASE_URL", "https://example.supabase.co")
 os.environ.setdefault("SUPABASE_SERVICE_KEY", "test-key")
 _install_dependency_stubs()
 bot_module = importlib.import_module("bot")
@@ -248,6 +249,75 @@ class AccountAccessTests(unittest.TestCase):
 
         with patch.object(supabase_module, "_get", side_effect=fake_get):
             self.assertEqual(manager.get_all_searches(), [("987", {"id": "search-1", "is_active": True})])
+
+
+class AdminCommandQueueTests(unittest.IsolatedAsyncioTestCase):
+    async def test_personal_message_job_targets_the_profile_chat(self):
+        class Store:
+            def get_profile_by_id(self, user_id):
+                self.user_id = user_id
+                return {"id": user_id, "telegram_chat_id": "987"}
+
+        store = Store()
+        telegram_bot = types.SimpleNamespace(send_message=AsyncMock())
+        context = types.SimpleNamespace(bot=telegram_bot)
+        job = {
+            "job_type": "send_message",
+            "target_user_id": "profile-1",
+            "payload": {"message": "הודעת שירות"},
+        }
+
+        with patch.object(bot_module, "sb", store):
+            result = await bot_module._execute_admin_job(context, job)
+
+        self.assertEqual(store.user_id, "profile-1")
+        self.assertEqual(result["sent"], 1)
+        telegram_bot.send_message.assert_awaited_once_with(987, "הודעת שירות")
+
+    async def test_reset_baseline_job_does_not_send_telegram(self):
+        class Store:
+            def __init__(self):
+                self.reset = []
+
+            def get_profile_by_id(self, user_id):
+                return {"id": user_id, "telegram_chat_id": "987"}
+
+            def get_search_by_id(self, search_id, user_id):
+                return {"id": search_id, "user_id": user_id, "name": "test"}
+
+            def reset_seen_ids(self, search_id):
+                self.reset.append(search_id)
+
+        store = Store()
+        context = types.SimpleNamespace(bot=types.SimpleNamespace(send_message=AsyncMock()))
+        job = {
+            "job_type": "reset_baseline",
+            "target_user_id": "profile-1",
+            "target_search_id": "search-1",
+            "payload": {},
+        }
+
+        with patch.object(bot_module, "sb", store):
+            result = await bot_module._execute_admin_job(context, job)
+
+        self.assertEqual(store.reset, ["search-1"])
+        self.assertTrue(result["baseline_reset"])
+        context.bot.send_message.assert_not_awaited()
+
+
+class AdminQueuePersistenceTests(unittest.TestCase):
+    def test_claim_uses_compare_and_set_on_queued_status(self):
+        manager = supabase_module.SupabaseManager()
+        patches = []
+        with patch.object(supabase_module, "_get", return_value=[{"id": "job-1", "status": "queued"}]), patch.object(
+            supabase_module,
+            "_patch",
+            side_effect=lambda path, params, body: patches.append((path, params, body)) or [{"id": "job-1", "status": "processing"}],
+        ):
+            claimed = manager.claim_next_admin_job()
+
+        self.assertEqual(claimed["status"], "processing")
+        self.assertEqual(patches[0][1]["status"], "eq.queued")
 
 
 if __name__ == "__main__":

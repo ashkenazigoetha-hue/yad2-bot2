@@ -11,7 +11,7 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-SUPABASE_URL = os.getenv("SUPABASE_URL", "https://exydxtitrmqulahfomxj.supabase.co")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
 
 
@@ -66,6 +66,41 @@ def _evaluate_access(access: dict | None) -> dict:
 
 
 class SupabaseManager:
+    # ── Admin command center ──────────────────────────────────────────────────
+
+    def update_runtime_status(self, **changes):
+        body = {**changes, "updated_at": datetime.now(timezone.utc).isoformat()}
+        _patch("bot_runtime_status", {"instance_id": "eq.primary"}, body)
+
+    def claim_next_admin_job(self) -> dict | None:
+        rows = _get(
+            "admin_jobs",
+            {
+                "status": "eq.queued",
+                "select": "*",
+                "order": "created_at.asc",
+                "limit": "1",
+            },
+        )
+        if not rows:
+            return None
+        job = rows[0]
+        claimed = _patch(
+            "admin_jobs",
+            {"id": f"eq.{job['id']}", "status": "eq.queued"},
+            {"status": "processing", "started_at": datetime.now(timezone.utc).isoformat(), "error": None},
+        )
+        return claimed[0] if claimed else None
+
+    def finish_admin_job(self, job_id: str, result: dict | None = None, error: str | None = None):
+        body = {
+            "status": "failed" if error else "completed",
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "result": result or {},
+            "error": (error or "")[:2000] or None,
+        }
+        _patch("admin_jobs", {"id": f"eq.{job_id}", "status": "eq.processing"}, body)
+
     # ── Account access ────────────────────────────────────────────────────────
 
     def get_user_access(self, profile_id: str) -> dict:
@@ -151,6 +186,19 @@ class SupabaseManager:
             if _evaluate_access(access_by_user.get(profile["id"]))["allowed"]
         ]
 
+    def get_all_connected_profiles(self) -> list[dict]:
+        return _get(
+            "profiles",
+            {"telegram_chat_id": "not.is.null", "select": "id,email,telegram_chat_id"},
+        )
+
+    def get_profile_by_id(self, profile_id: str) -> dict | None:
+        rows = _get(
+            "profiles",
+            {"id": f"eq.{profile_id}", "select": "id,email,telegram_chat_id"},
+        )
+        return rows[0] if rows else None
+
     # ── Searches ──────────────────────────────────────────────────────────────
 
     def get_searches(self, chat_id: str, active_only: bool = True) -> list[dict]:
@@ -175,6 +223,19 @@ class SupabaseManager:
             for s in searches:
                 result.append((p["telegram_chat_id"], s))
         return result
+
+    def get_search_by_id(self, search_id: str, user_id: str | None = None) -> dict | None:
+        params = {"id": f"eq.{search_id}", "select": "*"}
+        if user_id:
+            params["user_id"] = f"eq.{user_id}"
+        rows = _get("searches", params)
+        return rows[0] if rows else None
+
+    def get_searches_by_user_id(self, user_id: str, active_only: bool = True) -> list[dict]:
+        params = {"user_id": f"eq.{user_id}", "select": "*"}
+        if active_only:
+            params["is_active"] = "eq.true"
+        return _get("searches", params)
 
     def pause_search_for_chat(self, search_id: str, chat_id: str) -> bool:
         profile = self.get_profile_by_chat(chat_id)
