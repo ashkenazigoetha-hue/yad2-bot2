@@ -36,6 +36,12 @@ def _patch(path: str, params: dict, body: dict) -> list:
     return r.json()
 
 
+def _rpc(fn: str, body: dict):
+    r = httpx.post(f"{SUPABASE_URL}/rest/v1/rpc/{fn}", headers=_headers(), json=body, timeout=10)
+    r.raise_for_status()
+    return r.json()
+
+
 def _evaluate_access(access: dict | None) -> dict:
     if not access:
         return {
@@ -66,6 +72,100 @@ def _evaluate_access(access: dict | None) -> dict:
 
 
 class SupabaseManager:
+    # ── Conversation logging (migration 0007) ─────────────────────────────────
+
+    def log_message(
+        self,
+        chat_id,
+        direction: str,
+        sender: str,
+        message_type: str,
+        content: str | None = None,
+        telegram_message_id: int | None = None,
+        media: dict | None = None,
+        delivery_status: str = "delivered",
+        delivery_error: str | None = None,
+        admin_email: str | None = None,
+        admin_user_id: str | None = None,
+    ):
+        """Append one message to the conversation log and refresh the thread
+        summary. Atomic on the database side (upsert conversation + insert
+        message + bump unread) via the log_telegram_message RPC."""
+        return _rpc(
+            "log_telegram_message",
+            {
+                "p_chat_id": str(chat_id),
+                "p_direction": direction,
+                "p_sender": sender,
+                "p_message_type": message_type,
+                "p_content": content,
+                "p_telegram_message_id": telegram_message_id,
+                "p_media": media,
+                "p_delivery_status": delivery_status,
+                "p_delivery_error": (delivery_error or "")[:1000] or None,
+                "p_admin_email": admin_email,
+                "p_admin_user_id": admin_user_id,
+            },
+        )
+
+    # ── Email alert outbox (migration 0007) ───────────────────────────────────
+
+    def get_due_email_alerts(self, limit: int = 10) -> list[dict]:
+        now = datetime.now(timezone.utc).isoformat()
+        return _get(
+            "admin_email_outbox",
+            {
+                "status": "eq.pending",
+                "next_attempt_at": f"lte.{now}",
+                "order": "created_at.asc",
+                "limit": str(limit),
+                "select": "*",
+            },
+        )
+
+    def claim_email_alert(self, alert_id: str) -> dict | None:
+        """Flip pending -> sending so a concurrent tick can't double-send."""
+        rows = _patch(
+            "admin_email_outbox",
+            {"id": f"eq.{alert_id}", "status": "eq.pending"},
+            {"status": "sending"},
+        )
+        return rows[0] if rows else None
+
+    def mark_email_sent(self, alert_id: str, recipients: list[str]):
+        _patch(
+            "admin_email_outbox",
+            {"id": f"eq.{alert_id}"},
+            {
+                "status": "sent",
+                "sent_at": datetime.now(timezone.utc).isoformat(),
+                "recipient_emails": recipients,
+                "last_error": None,
+            },
+        )
+
+    def mark_email_retry(self, alert_id: str, attempts: int, error: str,
+                         next_attempt_at: str, exhausted: bool):
+        _patch(
+            "admin_email_outbox",
+            {"id": f"eq.{alert_id}"},
+            {
+                "status": "failed" if exhausted else "pending",
+                "attempts": attempts,
+                "last_error": (error or "")[:2000] or None,
+                "next_attempt_at": next_attempt_at,
+            },
+        )
+
+    def requeue_email_alert(self, alert_id: str) -> dict | None:
+        """Admin 'retry' from the website: put a failed alert back in the queue."""
+        rows = _patch(
+            "admin_email_outbox",
+            {"id": f"eq.{alert_id}"},
+            {"status": "pending", "next_attempt_at": datetime.now(timezone.utc).isoformat()},
+        )
+        return rows[0] if rows else None
+
     # ── Admin command center ──────────────────────────────────────────────────
 
     def update_runtime_status(self, **changes):
