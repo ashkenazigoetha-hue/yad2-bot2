@@ -7,14 +7,19 @@ Searches are created on the website; the bot links users with a one-time token a
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import io
 import logging
 import os
 import re
 import socket
+import ssl
+import smtplib
 import sys
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
+from email.utils import formataddr
 from typing import Optional
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
@@ -24,6 +29,7 @@ from telegram.ext import (
     CommandHandler,
     CallbackQueryHandler,
     ContextTypes,
+    TypeHandler,
 )
 
 from config import Config
@@ -87,6 +93,272 @@ def _fmt_il_time(iso_ts: Optional[str]) -> str:
         return dt.strftime("%H:%M %d/%m")
     except Exception:
         return _safe(str(iso_ts)[:16].replace("T", " "))
+
+# ── Conversation logging (migration 0007) ──────────────────────────────────────
+#
+# Everything a user sends and everything the bot/admin replies is recorded so the
+# website's conversation center can show the full thread. Two entry points:
+#   * an inbound TypeHandler in group -1 that runs before every command handler;
+#   * a central outbound wrapper (LoggingExtBot) every send passes through.
+# Logging is always best-effort: a logging failure must never break the bot or
+# stop a real notification from going out.
+
+# Attribution for the next outbound send in the current task. Admin-initiated
+# sends set this so the message is recorded under the admin's name.
+_send_attrib: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar(
+    "send_attrib", default=None
+)
+
+
+def _redact_tokens(text: str) -> str:
+    """Never persist Telegram link tokens (or anything token-shaped after a
+    /start deep link). Keeps the command visible, hides the secret."""
+    if not text:
+        return text
+    # /start link_<uuid>  ->  /start link_[redacted]
+    text = re.sub(r"(link_)[A-Za-z0-9\-]{6,}", r"\1[redacted]", text)
+    # bare "/start <long-token>"
+    text = re.sub(r"(/start\s+)\S{12,}", r"\1[redacted]", text)
+    return text
+
+
+def _media_meta(obj, extra: dict | None = None) -> dict:
+    """Safe media metadata only — file handles/sizes, never a token or URL."""
+    meta: dict = {}
+    for attr in ("file_id", "file_unique_id", "mime_type", "file_name",
+                 "file_size", "width", "height", "duration"):
+        val = getattr(obj, attr, None)
+        if val is not None:
+            meta[attr] = val
+    if extra:
+        meta.update(extra)
+    return meta
+
+
+def _classify_inbound(update) -> Optional[dict]:
+    """Turn an incoming Telegram update into a row for telegram_messages.
+    Returns None for updates that carry no chat (nothing to log)."""
+    chat = getattr(update, "effective_chat", None)
+    if chat is None or getattr(chat, "id", None) is None:
+        return None
+    chat_id = str(chat.id)
+
+    base = {
+        "chat_id": chat_id,
+        "direction": "inbound",
+        "sender": "user",
+        "content": None,
+        "telegram_message_id": None,
+        "media": None,
+    }
+
+    cq = getattr(update, "callback_query", None)
+    if cq is not None:
+        data = _redact_tokens(getattr(cq, "data", "") or "")
+        msg = getattr(cq, "message", None)
+        base.update({
+            "message_type": "callback",
+            "content": f"[כפתור] {data}" if data else "[כפתור]",
+            "telegram_message_id": getattr(msg, "message_id", None),
+        })
+        return base
+
+    msg = getattr(update, "message", None) or getattr(update, "edited_message", None)
+    if msg is None:
+        return None
+    base["telegram_message_id"] = getattr(msg, "message_id", None)
+
+    text = getattr(msg, "text", None)
+    caption = getattr(msg, "caption", None)
+
+    if text and text.startswith("/"):
+        base.update({"message_type": "command", "content": _redact_tokens(text)})
+    elif text:
+        base.update({"message_type": "text", "content": text})
+    elif getattr(msg, "photo", None):
+        photos = msg.photo
+        largest = photos[-1] if photos else None
+        base.update({"message_type": "photo", "content": caption,
+                     "media": _media_meta(largest) if largest else None})
+    elif getattr(msg, "voice", None):
+        base.update({"message_type": "voice", "content": caption, "media": _media_meta(msg.voice)})
+    elif getattr(msg, "audio", None):
+        base.update({"message_type": "audio", "content": caption, "media": _media_meta(msg.audio)})
+    elif getattr(msg, "video", None):
+        base.update({"message_type": "video", "content": caption, "media": _media_meta(msg.video)})
+    elif getattr(msg, "video_note", None):
+        base.update({"message_type": "video_note", "media": _media_meta(msg.video_note)})
+    elif getattr(msg, "document", None):
+        base.update({"message_type": "document", "content": caption, "media": _media_meta(msg.document)})
+    elif getattr(msg, "animation", None):
+        base.update({"message_type": "animation", "content": caption, "media": _media_meta(msg.animation)})
+    elif getattr(msg, "sticker", None):
+        emoji = getattr(msg.sticker, "emoji", None)
+        base.update({"message_type": "sticker", "content": emoji, "media": _media_meta(msg.sticker)})
+    elif getattr(msg, "location", None):
+        loc = msg.location
+        base.update({"message_type": "location",
+                     "content": f"{getattr(loc,'latitude','')},{getattr(loc,'longitude','')}",
+                     "media": {"latitude": getattr(loc, "latitude", None),
+                               "longitude": getattr(loc, "longitude", None)}})
+    elif getattr(msg, "contact", None):
+        c = msg.contact
+        name = " ".join(filter(None, [getattr(c, "first_name", None), getattr(c, "last_name", None)]))
+        base.update({"message_type": "contact",
+                     "content": " ".join(filter(None, [name, getattr(c, "phone_number", None)])).strip() or "[איש קשר]",
+                     "media": {"phone_number": getattr(c, "phone_number", None), "name": name}})
+    else:
+        base.update({"message_type": "other", "content": caption})
+    return base
+
+
+def _record_inbound_sync(info: dict):
+    try:
+        sb.log_message(
+            chat_id=info["chat_id"],
+            direction="inbound",
+            sender="user",
+            message_type=info["message_type"],
+            content=info.get("content"),
+            telegram_message_id=info.get("telegram_message_id"),
+            media=info.get("media"),
+            delivery_status="delivered",
+        )
+    except Exception as exc:  # never let logging break message handling
+        logger.warning(f"inbound conversation log failed: {exc}")
+
+
+async def log_inbound_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """group=-1 handler: log every incoming update before command handlers run."""
+    try:
+        info = _classify_inbound(update)
+        if info:
+            await asyncio.to_thread(_record_inbound_sync, info)
+    except Exception as exc:
+        logger.warning(f"inbound classify/log failed: {exc}")
+
+
+def _record_outbound_sync(chat_id, message_type: str, content: str | None,
+                          telegram_message_id: int | None, status: str,
+                          error: str | None):
+    attrib = _send_attrib.get() or {}
+    try:
+        sb.log_message(
+            chat_id=chat_id,
+            direction="outbound",
+            sender=attrib.get("sender", "bot"),
+            message_type=message_type,
+            content=content,
+            telegram_message_id=telegram_message_id,
+            delivery_status=status,
+            delivery_error=error,
+            admin_email=attrib.get("admin_email"),
+            admin_user_id=attrib.get("admin_user_id"),
+        )
+    except Exception as exc:
+        logger.warning(f"outbound conversation log failed: {exc}")
+
+
+# ── Admin "new user" email alerts (durable outbox drained here) ─────────────────
+
+def _admin_alert_recipients() -> list[str]:
+    return [e.strip() for e in os.getenv("ADMIN_ALERT_EMAILS", "").split(",") if e.strip()]
+
+
+def _build_new_user_email(payload: dict, recipients: list[str]) -> EmailMessage:
+    user_id = str(payload.get("user_id") or "")
+    email = payload.get("email") or "—"
+    tg = "כן" if payload.get("telegram_connected") else "לא"
+    signed_up = _fmt_il_time(payload.get("created_at"))
+    trial_ends = _fmt_il_time(payload.get("trial_ends_at"))
+    admin_link = f"{SITE_URL}/admin?user={user_id}" if user_id else f"{SITE_URL}/admin"
+
+    text = (
+        "משתמש חדש נרשם ל-CarConnoisseur\n\n"
+        f"אימייל: {email}\n"
+        f"מזהה משתמש: {user_id}\n"
+        f"נרשם בתאריך (שעון ישראל): {signed_up}\n"
+        f"Telegram מחובר: {tg}\n"
+        f"תקופת ניסיון עד: {trial_ends}\n\n"
+        f"כרטיס המשתמש בממשק הניהול: {admin_link}\n"
+    )
+    html = f"""\
+<div dir="rtl" style="font-family:Arial,Helvetica,sans-serif;max-width:560px;margin:auto">
+  <h2 style="color:#1d4ed8;margin:0 0 12px">משתמש חדש נרשם ל-CarConnoisseur</h2>
+  <table style="border-collapse:collapse;width:100%;font-size:14px">
+    <tr><td style="padding:6px 8px;color:#64748b">אימייל</td><td style="padding:6px 8px;font-weight:700">{email}</td></tr>
+    <tr><td style="padding:6px 8px;color:#64748b">מזהה משתמש</td><td style="padding:6px 8px;font-family:monospace">{user_id}</td></tr>
+    <tr><td style="padding:6px 8px;color:#64748b">נרשם (שעון ישראל)</td><td style="padding:6px 8px">{signed_up}</td></tr>
+    <tr><td style="padding:6px 8px;color:#64748b">Telegram מחובר</td><td style="padding:6px 8px">{tg}</td></tr>
+    <tr><td style="padding:6px 8px;color:#64748b">תקופת ניסיון עד</td><td style="padding:6px 8px">{trial_ends}</td></tr>
+  </table>
+  <p style="margin:18px 0"><a href="{admin_link}" style="background:#1d4ed8;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:700">פתח את כרטיס המשתמש</a></p>
+</div>"""
+
+    user = os.getenv("EMAIL_USER", "")
+    frm = os.getenv("EMAIL_FROM") or user
+    msg = EmailMessage()
+    msg["Subject"] = "משתמש חדש נרשם ל-CarConnoisseur"
+    msg["From"] = formataddr(("CarConnoisseur", frm))
+    msg["To"] = ", ".join(recipients)
+    msg.set_content(text)
+    msg.add_alternative(html, subtype="html")
+    return msg
+
+
+def _send_new_user_email(alert: dict, recipients: list[str]):
+    user = os.getenv("EMAIL_USER", "")
+    password = os.getenv("EMAIL_APP_PASSWORD", "")
+    if not user or not password:
+        raise RuntimeError("EMAIL_USER/EMAIL_APP_PASSWORD not configured")
+    if not recipients:
+        raise RuntimeError("ADMIN_ALERT_EMAILS is empty")
+    host = os.getenv("SMTP_HOST", "smtp.gmail.com")
+    port = int(os.getenv("SMTP_PORT", "587"))
+    msg = _build_new_user_email(alert.get("payload") or {}, recipients)
+    context_ssl = ssl.create_default_context()
+    with smtplib.SMTP(host, port, timeout=30) as server:
+        server.starttls(context=context_ssl)
+        server.login(user, password)
+        server.send_message(msg)
+
+
+_email_schema_missing_logged = False
+
+
+async def process_email_outbox(context: ContextTypes.DEFAULT_TYPE):
+    """Drain the durable admin-alert outbox with staged backoff. One alert per
+    signup is guaranteed by a unique dedupe key at insert time (migration 0007)."""
+    global _email_schema_missing_logged
+    try:
+        due = await asyncio.to_thread(sb.get_due_email_alerts)
+        _email_schema_missing_logged = False
+    except Exception as exc:
+        if not _email_schema_missing_logged:
+            logger.warning(f"Email outbox unavailable (run migration 0007 before enabling it): {exc}")
+            _email_schema_missing_logged = True
+        return
+
+    recipients = _admin_alert_recipients()
+    for alert in due:
+        claimed = await asyncio.to_thread(sb.claim_email_alert, alert["id"])
+        if not claimed:
+            continue  # another tick grabbed it
+        try:
+            await asyncio.to_thread(_send_new_user_email, claimed, recipients)
+            await asyncio.to_thread(sb.mark_email_sent, claimed["id"], recipients)
+            logger.info(f"New-user alert emailed to {len(recipients)} admin(s): id={claimed['id']}")
+        except Exception as exc:
+            attempts = int(claimed.get("attempts") or 0) + 1
+            exhausted = attempts >= int(claimed.get("max_attempts") or 8)
+            delay = min(60 * (2 ** (attempts - 1)), 3600)  # 1m,2m,4m … capped at 1h
+            nxt = (datetime.now(timezone.utc) + timedelta(seconds=delay)).isoformat()
+            await asyncio.to_thread(
+                sb.mark_email_retry, claimed["id"], attempts, str(exc), nxt, exhausted
+            )
+            level = logger.error if exhausted else logger.warning
+            level(f"New-user alert send failed (attempt {attempts}, retry in {delay}s): {exc}")
+
 
 # ── /start ────────────────────────────────────────────────────────────────────
 
@@ -704,6 +976,15 @@ async def _execute_admin_job(context: ContextTypes.DEFAULT_TYPE, job: dict) -> d
         await poll_all_searches(context)
         return {"scope": "all", **_runtime_counters}
 
+    # A direct message or broadcast from the admin console is logged under the
+    # admin's name; scan-triggered listing alerts remain "bot" notifications.
+    def _admin_attrib():
+        return _send_attrib.set({
+            "sender": "admin",
+            "admin_email": job.get("requested_by_email"),
+            "admin_user_id": job.get("requested_by"),
+        })
+
     if job_type == "send_broadcast":
         message = str(payload.get("message") or "").strip()
         if not message:
@@ -712,12 +993,15 @@ async def _execute_admin_job(context: ContextTypes.DEFAULT_TYPE, job: dict) -> d
         sent = 0
         failed = 0
         for profile in profiles:
+            token = _admin_attrib()
             try:
                 await context.bot.send_message(int(profile["telegram_chat_id"]), message)
                 sent += 1
             except Exception as exc:
                 failed += 1
                 logger.warning(f"Broadcast failed for profile={profile.get('id')}: {exc}")
+            finally:
+                _send_attrib.reset(token)
         _runtime_counters["messages_sent"] += sent
         return {"recipients": len(profiles), "sent": sent, "failed": failed}
 
@@ -731,7 +1015,11 @@ async def _execute_admin_job(context: ContextTypes.DEFAULT_TYPE, job: dict) -> d
         message = str(payload.get("message") or "").strip()
         if not message:
             raise ValueError("ההודעה ריקה")
-        await context.bot.send_message(int(profile["telegram_chat_id"]), message)
+        token = _admin_attrib()
+        try:
+            await context.bot.send_message(int(profile["telegram_chat_id"]), message)
+        finally:
+            _send_attrib.reset(token)
         _runtime_counters["messages_sent"] += 1
         return {"sent": 1, "user_id": user_id}
 
@@ -1432,6 +1720,45 @@ async def _post_init(application):
     )
 
 
+def _build_logging_bot(token: str):
+    """The single central outbound layer: every message the bot sends — replies,
+    listing alerts, admin messages — flows through send_message/send_photo here
+    and is recorded in the conversation log. Logging never blocks or breaks a
+    real send."""
+    from telegram.ext import ExtBot
+
+    class LoggingExtBot(ExtBot):
+        async def send_message(self, chat_id, text, *args, **kwargs):
+            try:
+                msg = await super().send_message(chat_id, text, *args, **kwargs)
+            except Exception as exc:
+                await asyncio.to_thread(
+                    _record_outbound_sync, chat_id, "text", text, None, "failed", str(exc)
+                )
+                raise
+            await asyncio.to_thread(
+                _record_outbound_sync, chat_id, "text", text,
+                getattr(msg, "message_id", None), "sent", None,
+            )
+            return msg
+
+        async def send_photo(self, chat_id, photo, *args, caption=None, **kwargs):
+            try:
+                msg = await super().send_photo(chat_id, photo, *args, caption=caption, **kwargs)
+            except Exception as exc:
+                await asyncio.to_thread(
+                    _record_outbound_sync, chat_id, "photo", caption, None, "failed", str(exc)
+                )
+                raise
+            await asyncio.to_thread(
+                _record_outbound_sync, chat_id, "photo", caption,
+                getattr(msg, "message_id", None), "sent", None,
+            )
+            return msg
+
+    return LoggingExtBot(token)
+
+
 def main():
     token = config.TELEGRAM_TOKEN
     if not token:
@@ -1442,7 +1769,10 @@ def main():
     start_api_thread(api_port)
     logger.info(f"🌐 API thread started on port {api_port}")
 
-    app = Application.builder().token(token).post_init(_post_init).build()
+    app = Application.builder().bot(_build_logging_bot(token)).post_init(_post_init).build()
+
+    # Record every inbound update before any command handler runs (group -1).
+    app.add_handler(TypeHandler(Update, log_inbound_handler), group=-1)
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
@@ -1466,6 +1796,7 @@ def main():
     app.job_queue.run_repeating(poll_all_searches, interval=interval, first=30)
     app.job_queue.run_repeating(welcome_new_searches, interval=60, first=10)
     app.job_queue.run_repeating(process_admin_jobs, interval=5, first=5)
+    app.job_queue.run_repeating(process_email_outbox, interval=20, first=8)
     app.job_queue.run_repeating(heartbeat, interval=30, first=2)
 
     logger.info(f"🚀 Bot started! Polling every {config.POLL_INTERVAL_MINUTES} minutes.")

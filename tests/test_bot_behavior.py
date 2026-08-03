@@ -40,6 +40,7 @@ def _install_dependency_stubs():
     telegram_ext.CommandHandler = object
     telegram_ext.CallbackQueryHandler = object
     telegram_ext.MessageHandler = object
+    telegram_ext.TypeHandler = object
     telegram_ext.filters = types.SimpleNamespace(TEXT=object(), COMMAND=object())
     telegram_ext.ContextTypes = types.SimpleNamespace(DEFAULT_TYPE=object)
     sys.modules.setdefault("telegram.ext", telegram_ext)
@@ -318,6 +319,181 @@ class AdminQueuePersistenceTests(unittest.TestCase):
 
         self.assertEqual(claimed["status"], "processing")
         self.assertEqual(patches[0][1]["status"], "eq.queued")
+
+
+class ConversationLoggingTests(unittest.TestCase):
+    def _chat(self, cid="123"):
+        return types.SimpleNamespace(id=cid)
+
+    def test_inbound_command_is_classified_and_link_token_redacted(self):
+        update = types.SimpleNamespace(
+            effective_chat=self._chat(),
+            callback_query=None,
+            message=types.SimpleNamespace(
+                message_id=7, text="/start link_abc123DEF456ghi", caption=None,
+                photo=None, voice=None, audio=None, video=None, video_note=None,
+                document=None, animation=None, sticker=None, location=None, contact=None,
+            ),
+            edited_message=None,
+        )
+        info = bot_module._classify_inbound(update)
+        self.assertEqual(info["message_type"], "command")
+        self.assertEqual(info["direction"], "inbound")
+        self.assertEqual(info["sender"], "user")
+        self.assertIn("[redacted]", info["content"])
+        self.assertNotIn("abc123DEF456ghi", info["content"])
+
+    def test_inbound_photo_captures_safe_media_only(self):
+        photo = types.SimpleNamespace(file_id="AgACfileID", file_unique_id="uq1", file_size=2048,
+                                      width=800, height=600)
+        update = types.SimpleNamespace(
+            effective_chat=self._chat(),
+            callback_query=None,
+            message=types.SimpleNamespace(
+                message_id=8, text=None, caption="רכב יפה", photo=[photo],
+                voice=None, audio=None, video=None, video_note=None, document=None,
+                animation=None, sticker=None, location=None, contact=None,
+            ),
+            edited_message=None,
+        )
+        info = bot_module._classify_inbound(update)
+        self.assertEqual(info["message_type"], "photo")
+        self.assertEqual(info["content"], "רכב יפה")
+        self.assertEqual(info["media"]["file_id"], "AgACfileID")
+        # No token or URL ever stored in media metadata.
+        self.assertNotIn("token", info["media"])
+        for value in info["media"].values():
+            self.assertNotIn("http", str(value))
+
+    def test_inbound_callback_button_is_logged(self):
+        update = types.SimpleNamespace(
+            effective_chat=self._chat(),
+            callback_query=types.SimpleNamespace(data="chk_42", message=types.SimpleNamespace(message_id=9)),
+            message=None,
+            edited_message=None,
+        )
+        info = bot_module._classify_inbound(update)
+        self.assertEqual(info["message_type"], "callback")
+        self.assertIn("chk_42", info["content"])
+
+    def test_outbound_defaults_to_bot_sender(self):
+        captured = {}
+
+        class Rec:
+            def log_message(self, **kwargs):
+                captured.update(kwargs)
+
+        with patch.object(bot_module, "sb", Rec()):
+            bot_module._record_outbound_sync("123", "text", "שלום", 11, "sent", None)
+        self.assertEqual(captured["sender"], "bot")
+        self.assertEqual(captured["direction"], "outbound")
+        self.assertEqual(captured["delivery_status"], "sent")
+
+    def test_admin_message_is_attributed_to_admin(self):
+        captured = {}
+
+        class Rec:
+            def log_message(self, **kwargs):
+                captured.update(kwargs)
+
+        token = bot_module._send_attrib.set(
+            {"sender": "admin", "admin_email": "ido.goetha5@gmail.com", "admin_user_id": "u-1"}
+        )
+        try:
+            with patch.object(bot_module, "sb", Rec()):
+                bot_module._record_outbound_sync("123", "text", "בדיקה", 12, "sent", None)
+        finally:
+            bot_module._send_attrib.reset(token)
+        self.assertEqual(captured["sender"], "admin")
+        self.assertEqual(captured["admin_email"], "ido.goetha5@gmail.com")
+
+    def test_delivery_failure_is_recorded(self):
+        captured = {}
+
+        class Rec:
+            def log_message(self, **kwargs):
+                captured.update(kwargs)
+
+        with patch.object(bot_module, "sb", Rec()):
+            bot_module._record_outbound_sync("123", "text", "נכשל", None, "failed", "chat not found")
+        self.assertEqual(captured["delivery_status"], "failed")
+        self.assertEqual(captured["delivery_error"], "chat not found")
+
+    def test_logging_failure_never_raises(self):
+        class Boom:
+            def log_message(self, **kwargs):
+                raise RuntimeError("db down")
+
+        with patch.object(bot_module, "sb", Boom()):
+            # Must not raise — logging is best-effort.
+            bot_module._record_outbound_sync("1", "text", "x", 1, "sent", None)
+            bot_module._record_inbound_sync(
+                {"chat_id": "1", "message_type": "text", "content": "x"}
+            )
+
+
+class EmailOutboxTests(unittest.IsolatedAsyncioTestCase):
+    def _alert(self, attempts=0, max_attempts=8):
+        return {"id": "a-1", "attempts": attempts, "max_attempts": max_attempts,
+                "payload": {"user_id": "u-1", "email": "new@user.test"}}
+
+    async def test_successful_send_marks_sent(self):
+        store = types.SimpleNamespace(
+            get_due_email_alerts=lambda limit=10: [self._alert()],
+            claim_email_alert=lambda aid: self._alert(),
+            mark_email_sent=lambda aid, recips: setattr(store, "sent", (aid, recips)),
+            mark_email_retry=lambda *a: setattr(store, "retried", a),
+        )
+        store.sent = None
+        store.retried = None
+        os.environ["ADMIN_ALERT_EMAILS"] = "ido.goetha5@gmail.com,erelash27@gmail.com"
+        with patch.object(bot_module, "sb", store), patch.object(
+            bot_module, "_send_new_user_email", lambda alert, recips: None
+        ):
+            await bot_module.process_email_outbox(types.SimpleNamespace())
+        self.assertEqual(store.sent[0], "a-1")
+        self.assertEqual(len(store.sent[1]), 2)
+        self.assertIsNone(store.retried)
+
+    async def test_failed_send_schedules_backoff_without_giving_up(self):
+        store = types.SimpleNamespace(
+            get_due_email_alerts=lambda limit=10: [self._alert()],
+            claim_email_alert=lambda aid: self._alert(attempts=0),
+            mark_email_sent=lambda aid, recips: setattr(store, "sent", True),
+            mark_email_retry=lambda aid, attempts, error, nxt, exhausted: setattr(
+                store, "retried", (attempts, exhausted)
+            ),
+        )
+        store.sent = None
+        store.retried = None
+        os.environ["ADMIN_ALERT_EMAILS"] = "ido.goetha5@gmail.com"
+
+        def boom(alert, recips):
+            raise RuntimeError("smtp offline")
+
+        with patch.object(bot_module, "sb", store), patch.object(
+            bot_module, "_send_new_user_email", boom
+        ):
+            await bot_module.process_email_outbox(types.SimpleNamespace())
+        self.assertIsNone(store.sent)
+        self.assertEqual(store.retried, (1, False))  # attempt 1, not exhausted
+
+    async def test_last_attempt_marks_failed(self):
+        store = types.SimpleNamespace(
+            get_due_email_alerts=lambda limit=10: [self._alert(attempts=7)],
+            claim_email_alert=lambda aid: self._alert(attempts=7, max_attempts=8),
+            mark_email_sent=lambda aid, recips: None,
+            mark_email_retry=lambda aid, attempts, error, nxt, exhausted: setattr(
+                store, "retried", (attempts, exhausted)
+            ),
+        )
+        store.retried = None
+        os.environ["ADMIN_ALERT_EMAILS"] = "ido.goetha5@gmail.com"
+        with patch.object(bot_module, "sb", store), patch.object(
+            bot_module, "_send_new_user_email", lambda a, r: (_ for _ in ()).throw(RuntimeError("x"))
+        ):
+            await bot_module.process_email_outbox(types.SimpleNamespace())
+        self.assertEqual(store.retried, (8, True))  # attempt 8 of 8 -> exhausted
 
 
 if __name__ == "__main__":
