@@ -433,9 +433,25 @@ class ConversationLoggingTests(unittest.TestCase):
 
 
 class EmailOutboxTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        os.environ["EMAIL_USER"] = "sender@gmail.com"
+        os.environ["EMAIL_APP_PASSWORD"] = "app-pass"
+        os.environ["ADMIN_ALERT_EMAILS"] = "ido.goetha5@gmail.com,erelash27@gmail.com"
+
     def _alert(self, attempts=0, max_attempts=8):
         return {"id": "a-1", "attempts": attempts, "max_attempts": max_attempts,
                 "payload": {"user_id": "u-1", "email": "new@user.test"}}
+
+    async def test_skips_without_burning_attempts_when_not_configured(self):
+        os.environ.pop("EMAIL_APP_PASSWORD", None)
+        touched = {"claimed": False}
+        store = types.SimpleNamespace(
+            get_due_email_alerts=lambda limit=10: (_ for _ in ()).throw(AssertionError("should not query")),
+            claim_email_alert=lambda aid: touched.__setitem__("claimed", True),
+        )
+        with patch.object(bot_module, "sb", store):
+            await bot_module.process_email_outbox(types.SimpleNamespace())
+        self.assertFalse(touched["claimed"])
 
     async def test_successful_send_marks_sent(self):
         store = types.SimpleNamespace(
