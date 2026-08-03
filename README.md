@@ -163,3 +163,5 @@ kill <PID>
 - yad2 boosts old listings to the top of the feed. The `_is_recent` check (7-day window based on `createdAt`) prevents these from being re-sent as new.
 - No-manufacturer searches (`_fetch_new`) are less efficient than manufacturer-grouped searches — they hit the search-specific URL with all filters in the URL.
 - `seen_ids` is capped at 5000 entries per search (oldest dropped). Very high-volume searches may occasionally re-send very old listings.
+
+<!-- Ido access verification: docs-only change, see carconnoisseur-web#1 -->
