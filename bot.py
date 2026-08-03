@@ -11,9 +11,10 @@ import io
 import logging
 import os
 import re
+import socket
 import sys
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
@@ -50,6 +51,9 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 config = Config()
 sb = SupabaseManager()
 scraper = Yad2Scraper()
+
+_runtime_counters = {"searches_processed": 0, "messages_sent": 0}
+_admin_schema_missing_logged = False
 
 
 def esc(text: str) -> str:
@@ -508,9 +512,51 @@ async def _process_search_with_listings(bot, chat_id: str, search: dict, all_lis
             }
             await asyncio.to_thread(sb.mark_seen, sid, sent_ids, None, sent_prices)
         await asyncio.to_thread(sb.update_search_status, sid, len(matching), bool(sent_ids))
+        _runtime_counters["searches_processed"] += 1
+        _runtime_counters["messages_sent"] += len(sent_ids)
+
+
+_full_poll_lock: Optional[asyncio.Lock] = None
+
+
+async def _runtime_update(**changes):
+    """Best-effort operational telemetry; an unavailable status table must not stop alerts."""
+    try:
+        await asyncio.to_thread(sb.update_runtime_status, **changes)
+    except Exception as exc:
+        logger.debug(f"Runtime status update skipped: {exc}")
 
 
 async def poll_all_searches(context: ContextTypes.DEFAULT_TYPE):
+    global _full_poll_lock
+    if _full_poll_lock is None:
+        _full_poll_lock = asyncio.Lock()
+    if _full_poll_lock.locked():
+        logger.info("Full poll already running — duplicate request skipped")
+        return
+    async with _full_poll_lock:
+        started = datetime.now(timezone.utc).isoformat()
+        await _runtime_update(state="scanning", last_heartbeat_at=started, last_poll_started_at=started)
+        try:
+            await _poll_all_searches_impl(context)
+            completed = datetime.now(timezone.utc).isoformat()
+            await _runtime_update(
+                state="online",
+                last_heartbeat_at=completed,
+                last_poll_completed_at=completed,
+                last_error=None,
+                **_runtime_counters,
+            )
+        except Exception as exc:
+            await _runtime_update(
+                state="degraded",
+                last_heartbeat_at=datetime.now(timezone.utc).isoformat(),
+                last_error=str(exc)[:1000],
+                **_runtime_counters,
+            )
+
+
+async def _poll_all_searches_impl(context: ContextTypes.DEFAULT_TYPE):
     logger.info("⏱ Running scheduled poll...")
     try:
         all_searches = await asyncio.to_thread(sb.get_all_searches)
@@ -613,6 +659,163 @@ async def poll_all_searches(context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"poll_all_searches crashed: {e}", exc_info=True)
+        raise
+
+
+# ── Admin command queue ──────────────────────────────────────────────────────
+
+async def _run_search_now(bot, profile: dict, search: dict) -> dict:
+    chat_id = profile.get("telegram_chat_id")
+    if not chat_id:
+        raise ValueError("למשתמש אין חשבון Telegram מחובר")
+    if search.get("is_active") is False:
+        raise ValueError("החיפוש מושהה")
+
+    listings, was_first_run, _ = await _fetch_new(search)
+    sent_ids = []
+    for listing in listings[:25]:
+        try:
+            await send_listing(bot, int(chat_id), listing, search["name"], search["id"], is_welcome=was_first_run)
+            sent_ids.append(listing["id"])
+        except Exception as exc:
+            logger.error(f"Admin scan send failed {listing.get('id')} → {chat_id}: {exc}")
+
+    if sent_ids:
+        sent_prices = {
+            listing["id"]: listing["price"]
+            for listing in listings
+            if listing["id"] in sent_ids and listing.get("price") is not None
+        }
+        await asyncio.to_thread(sb.mark_seen, search["id"], sent_ids, None, sent_prices)
+        await asyncio.to_thread(sb.mark_notified, search["id"])
+
+    _runtime_counters["searches_processed"] += 1
+    _runtime_counters["messages_sent"] += len(sent_ids)
+    return {"search_id": search["id"], "found": len(listings), "sent": len(sent_ids), "seeded": was_first_run}
+
+
+async def _execute_admin_job(context: ContextTypes.DEFAULT_TYPE, job: dict) -> dict:
+    job_type = job["job_type"]
+    user_id = job.get("target_user_id")
+    search_id = job.get("target_search_id")
+    payload = job.get("payload") or {}
+
+    if job_type == "scan_all":
+        await poll_all_searches(context)
+        return {"scope": "all", **_runtime_counters}
+
+    if job_type == "send_broadcast":
+        message = str(payload.get("message") or "").strip()
+        if not message:
+            raise ValueError("הודעת השידור ריקה")
+        profiles = await asyncio.to_thread(sb.get_all_connected_profiles)
+        sent = 0
+        failed = 0
+        for profile in profiles:
+            try:
+                await context.bot.send_message(int(profile["telegram_chat_id"]), message)
+                sent += 1
+            except Exception as exc:
+                failed += 1
+                logger.warning(f"Broadcast failed for profile={profile.get('id')}: {exc}")
+        _runtime_counters["messages_sent"] += sent
+        return {"recipients": len(profiles), "sent": sent, "failed": failed}
+
+    profile = await asyncio.to_thread(sb.get_profile_by_id, user_id)
+    if not profile:
+        raise ValueError("המשתמש לא נמצא")
+
+    if job_type == "send_message":
+        if not profile.get("telegram_chat_id"):
+            raise ValueError("למשתמש אין חשבון Telegram מחובר")
+        message = str(payload.get("message") or "").strip()
+        if not message:
+            raise ValueError("ההודעה ריקה")
+        await context.bot.send_message(int(profile["telegram_chat_id"]), message)
+        _runtime_counters["messages_sent"] += 1
+        return {"sent": 1, "user_id": user_id}
+
+    if job_type in ("scan_user", "scan_search"):
+        access = await asyncio.to_thread(sb.get_user_access, user_id)
+        if not access.get("allowed"):
+            raise ValueError("המשתמש חסום או שהגישה שלו פגה; הסריקה לא הופעלה")
+
+    if job_type == "scan_user":
+        searches = await asyncio.to_thread(sb.get_searches_by_user_id, user_id, True)
+        results = []
+        for search in searches:
+            results.append(await _run_search_now(context.bot, profile, search))
+        return {
+            "user_id": user_id,
+            "searches": len(results),
+            "sent": sum(item["sent"] for item in results),
+            "results": results,
+        }
+
+    search = await asyncio.to_thread(sb.get_search_by_id, search_id, user_id)
+    if not search:
+        raise ValueError("החיפוש לא נמצא או אינו שייך למשתמש")
+    if job_type == "reset_baseline":
+        await asyncio.to_thread(sb.reset_seen_ids, search_id)
+        return {"search_id": search_id, "baseline_reset": True}
+    if job_type == "scan_search":
+        return await _run_search_now(context.bot, profile, search)
+    raise ValueError(f"Unsupported admin job type: {job_type}")
+
+
+_admin_job_lock: Optional[asyncio.Lock] = None
+
+
+async def process_admin_jobs(context: ContextTypes.DEFAULT_TYPE):
+    global _admin_job_lock
+    if _admin_job_lock is None:
+        _admin_job_lock = asyncio.Lock()
+    if _admin_job_lock.locked():
+        return
+    async with _admin_job_lock:
+        await _process_admin_jobs_impl(context)
+
+
+async def _process_admin_jobs_impl(context: ContextTypes.DEFAULT_TYPE):
+    global _admin_schema_missing_logged
+    try:
+        job = await asyncio.to_thread(sb.claim_next_admin_job)
+        _admin_schema_missing_logged = False
+    except Exception as exc:
+        if not _admin_schema_missing_logged:
+            logger.warning(f"Admin command queue unavailable (run migration 0006 before enabling it): {exc}")
+            _admin_schema_missing_logged = True
+        return
+    if not job:
+        return
+
+    logger.info(f"Admin job started: {job['job_type']} id={job['id']}")
+    try:
+        result = await _execute_admin_job(context, job)
+        await asyncio.to_thread(sb.finish_admin_job, job["id"], result, None)
+        await _runtime_update(
+            state="online",
+            last_heartbeat_at=datetime.now(timezone.utc).isoformat(),
+            last_job_at=datetime.now(timezone.utc).isoformat(),
+            **_runtime_counters,
+        )
+        logger.info(f"Admin job completed: id={job['id']} result={result}")
+    except Exception as exc:
+        logger.error(f"Admin job failed: id={job['id']} {exc}", exc_info=True)
+        try:
+            await asyncio.to_thread(sb.finish_admin_job, job["id"], None, str(exc))
+        except Exception as finish_exc:
+            logger.error(f"Failed to persist admin job failure: {finish_exc}")
+
+
+async def heartbeat(context: ContextTypes.DEFAULT_TYPE):
+    await _runtime_update(
+        state="online" if not (_full_poll_lock and _full_poll_lock.locked()) else "scanning",
+        last_heartbeat_at=datetime.now(timezone.utc).isoformat(),
+        version=os.getenv("BOT_VERSION", "dev"),
+        host_name=socket.gethostname()[:120],
+        **_runtime_counters,
+    )
 
 
 # ── Fetch helper (replaces scraper.fetch_new_listings) ────────────────────────
@@ -1182,6 +1385,13 @@ async def _post_init(application):
         BotCommand("status", "מצב הבוט"),
         BotCommand("help", "עזרה ופקודות"),
     ])
+    await _runtime_update(
+        state="starting",
+        last_heartbeat_at=datetime.now(timezone.utc).isoformat(),
+        version=os.getenv("BOT_VERSION", "dev"),
+        host_name=socket.gethostname()[:120],
+        **_runtime_counters,
+    )
 
 
 def main():
@@ -1217,6 +1427,8 @@ def main():
     interval = config.POLL_INTERVAL_MINUTES * 60
     app.job_queue.run_repeating(poll_all_searches, interval=interval, first=30)
     app.job_queue.run_repeating(welcome_new_searches, interval=60, first=10)
+    app.job_queue.run_repeating(process_admin_jobs, interval=5, first=5)
+    app.job_queue.run_repeating(heartbeat, interval=30, first=2)
 
     logger.info(f"🚀 Bot started! Polling every {config.POLL_INTERVAL_MINUTES} minutes.")
     app.run_polling(drop_pending_updates=True)

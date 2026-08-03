@@ -17,6 +17,8 @@ class Config:
         self.ADMIN_CHAT_IDS = os.getenv("ADMIN_CHAT_IDS", "")
         if not self.TELEGRAM_TOKEN:
             raise ValueError("TELEGRAM_TOKEN must be set in .env")
+        if not os.getenv("SUPABASE_URL"):
+            raise ValueError("SUPABASE_URL must be set in .env")
         if not os.getenv("SUPABASE_SERVICE_KEY"):
             import logging
             logging.getLogger(__name__).warning("⚠️ SUPABASE_SERVICE_KEY not set – bot will not be able to read searches")

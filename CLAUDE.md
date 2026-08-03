@@ -38,8 +38,10 @@ truth for this repository and update it whenever infrastructure changes.
 - The rebuild transferred 4 users, 8 searches and their `seen_ids`. A verified
   Kia Sportage search retained 242 seen listings and sent only 4 new listings
   plus 2 price changes after cutover.
-- Database schema is migrations `0001` through `0005`. `0005` provides
-  `user_access`, trials, blocking and the admin audit log.
+- Database schema is migrations `0001` through `0006`. `0005` provides
+  `user_access`, trials, blocking and the admin audit log. `0006` adds the
+  `admin_jobs` queue and `bot_runtime_status` heartbeat. Do not deploy the job
+  consumer before `0006` exists in the active project.
 
 Never print, commit or message `SUPABASE_SERVICE_KEY`, `TELEGRAM_TOKEN`, database
 passwords or connection strings. It is safe to print the project URL/ref only.
@@ -79,6 +81,9 @@ is disabled in the current code to prevent future URL/token logging.
   deleted-search detection.
 - `_process_search_with_listings()` — filters, detects new/price changes, sends.
 - `SupabaseManager` — profiles, access enforcement, searches and seen state.
+- `process_admin_jobs()` — serialized five-second consumer for admin-triggered
+  scans, baseline resets and Telegram service messages.
+- `heartbeat()` — best-effort status update for the website command center.
 - Admin access enforcement baseline: commit `635086a`.
 
 ## Safe update procedure
