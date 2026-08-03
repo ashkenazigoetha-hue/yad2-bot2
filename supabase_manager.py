@@ -201,6 +201,32 @@ class SupabaseManager:
             {"last_notified_at": datetime.now(timezone.utc).isoformat()},
         )
 
+    # ── on-demand "scan & send now" requests (triggered from the admin site) ──
+    def get_scan_requests(self) -> list[tuple[str, dict]]:
+        """Searches with a pending admin scan request, as (chat_id, search)."""
+        profiles = self.get_all_linked_profiles()
+        chat_by_user = {p["id"]: p["telegram_chat_id"] for p in profiles}
+        rows = _get("searches", {"scan_requested_at": "not.is.null", "select": "*"})
+        out = []
+        for s in rows:
+            chat_id = chat_by_user.get(s["user_id"])
+            if chat_id:
+                out.append((chat_id, s))
+        return out
+
+    def finish_scan_request(self, search_id: str, found: int, sent: int):
+        """Clear the request flag and record how many new listings were found/sent."""
+        now = datetime.now(timezone.utc).isoformat()
+        body: dict = {
+            "scan_requested_at": None,
+            "last_scanned_at": now,
+            "last_match_count": found,
+            "last_sent_count": sent,
+        }
+        if sent > 0:
+            body["last_notified_at"] = now
+        _patch("searches", {"id": f"eq.{search_id}"}, body)
+
     # ── seen_ids + seen_prices ────────────────────────────────────────────────
 
     def get_seen_state(self, search_id: str) -> tuple[list[str] | None, dict]:

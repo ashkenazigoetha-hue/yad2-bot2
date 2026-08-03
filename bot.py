@@ -1016,6 +1016,44 @@ async def debug_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"שגיאה: {e}")
 
 
+# ── On-demand "scan & send now" from the admin site (runs every 30s) ─────────
+
+async def process_scan_requests(context: ContextTypes.DEFAULT_TYPE):
+    """Pick up searches an admin flagged for an immediate scan, scan+send now,
+    and record how many new listings were found and sent."""
+    try:
+        requests = await asyncio.to_thread(sb.get_scan_requests)
+        if not requests:
+            return
+        logger.info(f"On-demand scan: {len(requests)} request(s)")
+        for chat_id, s in requests:
+            try:
+                access = await asyncio.to_thread(sb.get_access_by_chat, chat_id)
+                allowed = (access is None) or access.get("allowed", True)
+                new_listings, was_first_run, _ = await _fetch_new(s)
+                sent_ids: list[str] = []
+                if allowed and new_listings:
+                    for listing in new_listings:
+                        try:
+                            await send_listing(context.bot, int(chat_id), listing, s["name"], s["id"], is_welcome=was_first_run)
+                            sent_ids.append(listing["id"])
+                        except Exception as se:
+                            logger.error(f"on-demand send failed {listing['id']} → {chat_id}: {se}")
+                    if sent_ids:
+                        sent_prices = {l["id"]: l["price"] for l in new_listings if l["id"] in sent_ids and l.get("price") is not None}
+                        await asyncio.to_thread(sb.mark_seen, s["id"], sent_ids, None, sent_prices)
+                await asyncio.to_thread(sb.finish_scan_request, s["id"], len(new_listings), len(sent_ids))
+                logger.info(f"On-demand scan {s['id']}: found {len(new_listings)} new, sent {len(sent_ids)}")
+            except Exception as e:
+                logger.error(f"On-demand scan {s.get('id')} failed: {e}", exc_info=True)
+                try:
+                    await asyncio.to_thread(sb.finish_scan_request, s["id"], 0, 0)
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.error(f"process_scan_requests crashed: {e}", exc_info=True)
+
+
 # ── Seed newly-created searches (runs every 60s) ─────────────────────────────
 
 async def welcome_new_searches(context: ContextTypes.DEFAULT_TYPE):
@@ -1217,6 +1255,7 @@ def main():
     interval = config.POLL_INTERVAL_MINUTES * 60
     app.job_queue.run_repeating(poll_all_searches, interval=interval, first=30)
     app.job_queue.run_repeating(welcome_new_searches, interval=60, first=10)
+    app.job_queue.run_repeating(process_scan_requests, interval=30, first=15)
 
     logger.info(f"🚀 Bot started! Polling every {config.POLL_INTERVAL_MINUTES} minutes.")
     app.run_polling(drop_pending_updates=True)
