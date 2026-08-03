@@ -483,6 +483,16 @@ class Yad2Scraper:
             except (ValueError, TypeError):
                 pass
 
+        # Hand (ownership number): hand_max=1 → first hand only, 2 → up to second, …
+        hand_max = search.get("hand_max")
+        listing_hand = listing.get("hand")
+        if hand_max and listing_hand is not None:
+            try:
+                if int(listing_hand) > int(hand_max):
+                    return False
+            except (ValueError, TypeError):
+                pass
+
         return True
 
     async def _fetch_item_details(self, token: str) -> dict:
