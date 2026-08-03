@@ -324,12 +324,24 @@ def _send_new_user_email(alert: dict, recipients: list[str]):
 
 
 _email_schema_missing_logged = False
+_email_config_missing_logged = False
 
 
 async def process_email_outbox(context: ContextTypes.DEFAULT_TYPE):
     """Drain the durable admin-alert outbox with staged backoff. One alert per
     signup is guaranteed by a unique dedupe key at insert time (migration 0007)."""
-    global _email_schema_missing_logged
+    global _email_schema_missing_logged, _email_config_missing_logged
+    recipients = _admin_alert_recipients()
+    # If email isn't configured yet, leave alerts untouched (pending) instead of
+    # burning their retry budget on a configuration gap. They send once the
+    # Gmail credentials are added to the environment.
+    if not (os.getenv("EMAIL_USER") and os.getenv("EMAIL_APP_PASSWORD") and recipients):
+        if not _email_config_missing_logged:
+            logger.warning("Email alerts not configured (EMAIL_USER/EMAIL_APP_PASSWORD/ADMIN_ALERT_EMAILS); alerts stay queued.")
+            _email_config_missing_logged = True
+        return
+    _email_config_missing_logged = False
+
     try:
         due = await asyncio.to_thread(sb.get_due_email_alerts)
         _email_schema_missing_logged = False
@@ -338,8 +350,6 @@ async def process_email_outbox(context: ContextTypes.DEFAULT_TYPE):
             logger.warning(f"Email outbox unavailable (run migration 0007 before enabling it): {exc}")
             _email_schema_missing_logged = True
         return
-
-    recipients = _admin_alert_recipients()
     for alert in due:
         claimed = await asyncio.to_thread(sb.claim_email_alert, alert["id"])
         if not claimed:
