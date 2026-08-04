@@ -31,6 +31,7 @@ from telegram.ext import (
     ContextTypes,
     TypeHandler,
 )
+from dotenv import load_dotenv
 
 from config import Config
 from supabase_manager import SupabaseManager
@@ -331,6 +332,13 @@ async def process_email_outbox(context: ContextTypes.DEFAULT_TYPE):
     """Drain the durable admin-alert outbox with staged backoff. One alert per
     signup is guaranteed by a unique dedupe key at insert time (migration 0007)."""
     global _email_schema_missing_logged, _email_config_missing_logged
+    # Re-read .env each cycle so newly-added email credentials (e.g. the Gmail
+    # App Password) are picked up WITHOUT restarting the bot. load_dotenv does
+    # not override values already present, so it only fills in missing keys.
+    try:
+        load_dotenv()
+    except Exception:
+        pass
     recipients = _admin_alert_recipients()
     # If email isn't configured yet, leave alerts untouched (pending) instead of
     # burning their retry budget on a configuration gap. They send once the
