@@ -159,6 +159,7 @@ YAD2_MODEL_IDS: dict = {
     ("סיאט", "לאון"): 10509, ("סיאט", "איביזה"): 10507, ("סיאט", "ארונה"): 10504,
     ("סיטרואן", "C3"): 10517, ("סיטרואן", "C4"): 10518, ("סיטרואן", "C5 איירקרוס"): 11551,
     ("סקודה", "אוקטביה"): 10547, ("סקודה", "קודיאק"): 10546, ("סקודה", "קארוק"): 10545,
+    ("סקודה", "קרוק"): 10545,  # common alternate spelling without the א
     ("סקודה", "סופרב"): 10551,
     ("פולקסווגן", "גולף"): 10562, ("פולקסווגן", "טיגואן"): 10574,
     ("פולקסווגן", "פולו"): 10571, ("פולקסווגן", "פאסאט"): 10568,
@@ -442,14 +443,22 @@ class Yad2Scraper:
         if wanted_model and not wanted_model.isdigit():
             normalized = self._normalize_model(wanted_model)
             listing_model = str(listing.get("model_text") or "").strip()
-            wl = wanted_model.lower()
-            nl = normalized.lower()
             ll = listing_model.lower()
 
             def _word_match(pattern: str, text: str) -> bool:
                 return bool(re.search(r'(?<!\w)' + re.escape(pattern) + r'(?!\w)', text, re.IGNORECASE))
 
-            if not (_word_match(wl, ll) or _word_match(ll, wl) or _word_match(nl, ll) or _word_match(ll, nl)):
+            # Different Hebrew transliterations of the same model (e.g. "קרוק" vs
+            # "קארוק") don't share a substring, so also try every other spelling
+            # that resolves to the same yad2 model id as the one the user typed.
+            manufacturer = str(search.get("manufacturer") or "").strip()
+            heb_mfr = MANUFACTURER_MAP.get(manufacturer.lower(), manufacturer)
+            model_id = YAD2_MODEL_IDS.get((heb_mfr, wanted_model.upper()))
+            spellings = {wanted_model, normalized}
+            if model_id:
+                spellings |= {k[1] for k, v in YAD2_MODEL_IDS.items() if k[0] == heb_mfr and v == model_id}
+
+            if not any(_word_match(s.lower(), ll) or _word_match(ll, s.lower()) for s in spellings):
                 return False
 
         if wanted_sub and not wanted_sub.isdigit():
