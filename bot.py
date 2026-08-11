@@ -22,6 +22,8 @@ from email.message import EmailMessage
 from email.utils import formataddr
 from typing import Optional
 
+import listing_card
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.error import Conflict
 from telegram.ext import (
@@ -1029,7 +1031,20 @@ async def _execute_admin_job(context: ContextTypes.DEFAULT_TYPE, job: dict) -> d
 
     if job_type == "send_message":
         if not profile.get("telegram_chat_id"):
-            raise ValueError("למשתמש אין חשבון Telegram מחובר")
+            # Preflight: a user with no Telegram is a PERMANENT non-delivery, not
+            # a failure. Returning a reason code completes the job so it never
+            # enters the failure queue and never enters a retry loop. The next
+            # action is connecting a channel, not retrying this send.
+            logger.info(
+                f"send_message skipped: user={user_id} reason=not_deliverable_no_telegram"
+            )
+            return {
+                "sent": 0,
+                "user_id": user_id,
+                "delivered": False,
+                "reason_code": "not_deliverable_no_telegram",
+                "next_action": "connect_telegram",
+            }
         message = str(payload.get("message") or "").strip()
         if not message:
             raise ValueError("ההודעה ריקה")
@@ -1233,128 +1248,134 @@ async def send_listing(
     search_id: str | None = None,
     is_welcome: bool = False,
 ):
-    title       = listing.get("title") or "רכב"
-    trim        = listing.get("trim") or ""
-    price       = listing.get("price")
-    year        = listing.get("year") or "—"
-    km          = listing.get("km")
-    city        = listing.get("city") or "—"
-    hand_text   = listing.get("hand_text") or (f"יד {listing['hand']}" if listing.get("hand") else "—")
-    ownership   = listing.get("ownership") or "—"
-    engine_cc   = listing.get("engine_cc")
-    engine_type = listing.get("engine_type") or ""
-    horsepower  = listing.get("horsepower")
-    turbo       = listing.get("turbo", False)
-    test_date   = listing.get("test_date") or ""
-    description = listing.get("description") or ""
-    features    = listing.get("features") or ""
-    contact_phone = listing.get("contact_phone") or ""
-    contact_name  = listing.get("contact_name") or ""
-    photo_url   = listing.get("photo_url")
+    """Render and deliver one listing card.
 
-    header = _safe(title)
-    if trim:
-        header += f" | {_safe(trim)}"
-
-    engine_parts = []
-    if engine_cc:
-        liters = round(engine_cc / 1000, 1)
-        engine_parts.append(f"{liters} ל׳")
-    if engine_type:
-        engine_parts.append(_safe(engine_type))
-    if turbo:
-        engine_parts.append("טורבו")
-    if horsepower:
-        engine_parts.append(f"{horsepower} כ\"ס")
-    engine_str = " · ".join(engine_parts)
-
+    Rendering lives in listing_card.render_card (pure, snapshot-tested). This
+    function only handles transport: photo vs text, caption limits and the
+    plain-text fallback. Any mandatory field the source did not supply is logged
+    via missing_fields rather than silently dropped from the message.
+    """
     price_change = listing.get("_price_change")
     if price_change:
-        old_p = price_change["old"]
-        new_p = price_change["new"]
-        arrow = "⬇️" if new_p < old_p else "⬆️"
-        price_header = f"💰 *עודכן מחיר!* {arrow} ₪{old_p:,} ← ₪{new_p:,}"
+        listing = {
+            **listing,
+            "price_previous": price_change.get("old"),
+            "price_current": price_change.get("new", listing.get("price")),
+        }
+        event = listing_card.EVENT_PRICE_DROP
     else:
-        price_header = None
+        event = listing_card.EVENT_NEW
 
-    if price_change:
-        listing_header = "🔄 *עודכן מחיר!*"
-    else:
-        listing_header = "🚗 *מודעה חדשה*"
+    card = listing_card.render_card(
+        listing,
+        search_name=search_name,
+        event=event,
+        match_reasons=listing.get("_match_reasons"),
+        detected_at=listing.get("detected_at"),
+        last_checked_at=listing.get("last_checked_at"),
+    )
+    if card.missing_fields:
+        logger.info(
+            f"listing {listing.get('id')}: source omitted {','.join(card.missing_fields)}"
+        )
 
-    lines = [
-        listing_header,
-        f"*{header}*",
-    ]
-    if price_change:
-        lines.append(price_header)
-    else:
-        lines.append(f"💰 *{price:,} ₪*" if price else "💰 מחיר לא צוין")
+    photo_url = listing.get("photo_url")
+    text = listing_card.fit(card.text, listing_card.CAPTION_LIMIT if photo_url
+                            else listing_card.MESSAGE_LIMIT)
 
-    lines.extend([
-        "━━━━━━━━━━━━━━",
-        f"📅 שנה: {year}",
-        f"✋ יד: {_safe(hand_text)}",
-        f"🛣️ קילומטראז׳: {km:,} ק\"מ" if km is not None else "🛣️ קילומטראז׳: לא צוין",
-        f"🏷️ בעלות: {_safe(ownership)}",
-    ])
-    if engine_str:
-        lines.append(f"⚙️ מנוע: {engine_str}")
-    if test_date:
-        lines.append(f"🧪 טסט עד: {_safe(test_date)}")
-    lines.append(f"📍 אזור מכירה: {_safe(city)}")
-    if contact_phone:
-        contact_line = f"📞 {_safe(contact_phone)}"
-        if contact_name:
-            contact_line += f" {_safe(contact_name)}"
-        lines.append(contact_line)
-    lines.append(f"🔎 חיפוש: {_safe(search_name)}")
-
-    listing_dt = scraper._parse_listing_date(listing.get("listing_date"))
-    if listing_dt:
-        lines.append(f"🕐 פורסמה: {listing_dt.strftime('%d/%m/%Y %H:%M')}")
-    # Optional free text stays last so Telegram's photo-caption limit never hides
-    # the mandatory vehicle facts, seller contact or the originating search.
-    if features:
-        lines.append(f"✨ תוספות: {_safe(features)[:220]}")
-    if description:
-        lines.append(f"📝 הערות המוכר: {_safe(description)[:240]}")
-
-    text = "\n".join(l for l in lines if l is not None)
-    if len(text) > 1020:
-        text = text[:1020] + "..."
-
-    keyboard = [[InlineKeyboardButton("🔗 פתיחת המודעה ביד2", url=listing["url"])]]
-    actions = [InlineKeyboardButton("⚙️ ניהול באתר", url=f"{SITE_URL}/dashboard")]
+    open_label = "פתיחת המודעה ביד2"
+    keyboard = [[InlineKeyboardButton(open_label, url=listing["url"])]]
+    feedback = []
     if search_id:
-        actions.insert(0, InlineKeyboardButton("⏸️ השהה חיפוש", callback_data=f"pause_{search_id}"))
-    keyboard.append(actions)
+        feedback.append(InlineKeyboardButton("לא רלוונטי", callback_data=f"irrelevant_{search_id}_{listing.get('id','')}"))
+    feedback.append(InlineKeyboardButton("ניהול באתר", url=f"{SITE_URL}/dashboard"))
+    keyboard.append(feedback)
+    if search_id:
+        keyboard.append([InlineKeyboardButton("השהה חיפוש", callback_data=f"pause_{search_id}")])
     markup = InlineKeyboardMarkup(keyboard)
 
     if photo_url:
         try:
-            await bot.send_photo(chat_id, photo=photo_url, caption=text, parse_mode="Markdown", reply_markup=markup)
+            await bot.send_photo(chat_id, photo=photo_url, caption=text,
+                                 parse_mode="HTML", reply_markup=markup)
             return
         except Exception as e:
             logger.info(f"Direct URL failed for {listing['id']}: {e} — trying download")
         photo_bytes = await scraper.download_photo(photo_url)
         if photo_bytes:
             try:
-                await bot.send_photo(chat_id, photo=io.BytesIO(photo_bytes), caption=text, parse_mode="Markdown", reply_markup=markup)
+                await bot.send_photo(chat_id, photo=io.BytesIO(photo_bytes), caption=text,
+                                     parse_mode="HTML", reply_markup=markup)
                 return
             except Exception as e:
                 logger.warning(f"Photo bytes failed for {listing['id']}: {e}")
 
     try:
-        await bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
+        await bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
     except Exception:
-        # Fallback: strip all formatting in case Markdown parsing failed
-        plain = re.sub(r"[*_`\[\]]", "", text)
+        # Fallback: drop tags entirely rather than lose the alert.
+        plain = re.sub(r"<[^>]+>", "", text)
         try:
             await bot.send_message(chat_id, plain, reply_markup=markup)
         except Exception as e:
             logger.error(f"Failed to send listing {listing['id']} to {chat_id}: {e}")
             raise
+
+
+# ── Alert feedback ────────────────────────────────────────────────────────────
+
+# reason_code → Hebrew label shown in the picker
+FEEDBACK_REASONS = [
+    ("price", "מחיר"),
+    ("area", "אזור"),
+    ("model", "דגם/גרסה"),
+    ("mileage", "קילומטראז׳"),
+    ("year", "שנתון"),
+    ("duplicate", "כפילות"),
+    ("other", "אחר"),
+]
+
+
+async def alert_irrelevant(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """First tap on 'לא רלוונטי' — ask why, one short question."""
+    query = update.callback_query
+    payload = query.data.replace("irrelevant_", "", 1)
+    search_id, _, listing_id = payload.partition("_")
+    rows, row = [], []
+    for code, label in FEEDBACK_REASONS:
+        row.append(InlineKeyboardButton(label, callback_data=f"fb_{code}_{search_id}_{listing_id}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    await query.answer()
+    await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(rows))
+
+
+async def alert_feedback_reason(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Second tap — persist the reason as an event.
+
+    Recording feedback never edits the search. Narrowing a search stays an
+    explicit action the user takes themselves, per the product spec.
+    """
+    query = update.callback_query
+    payload = query.data.replace("fb_", "", 1)
+    reason_code, _, rest = payload.partition("_")
+    search_id, _, listing_id = rest.partition("_")
+    chat_id = str(query.message.chat_id)
+
+    saved = await asyncio.to_thread(
+        sb.record_alert_feedback, chat_id, search_id, listing_id, reason_code
+    )
+    await query.answer("תודה, נשתמש בזה כדי לשפר את ההתאמות" if saved
+                       else "לא הצלחתי לשמור את המשוב")
+    await query.edit_message_reply_markup(
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("עריכת החיפוש", url=f"{SITE_URL}/dashboard")
+        ]])
+    )
+
 
 
 # ── Misc commands ─────────────────────────────────────────────────────────────
@@ -1807,6 +1828,8 @@ def main():
     app.add_handler(CallbackQueryHandler(view_search, pattern="^view_"))
     app.add_handler(CallbackQueryHandler(check_single, pattern="^chk_"))
     app.add_handler(CallbackQueryHandler(pause_search, pattern="^pause_"))
+    app.add_handler(CallbackQueryHandler(alert_irrelevant, pattern="^irrelevant_"))
+    app.add_handler(CallbackQueryHandler(alert_feedback_reason, pattern="^fb_"))
     app.add_handler(CallbackQueryHandler(back_to_list, pattern="^back_to_list$"))
     app.add_error_handler(_error_handler)
 
