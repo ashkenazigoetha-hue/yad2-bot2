@@ -337,3 +337,56 @@ class TelegramPreflightTests(unittest.TestCase):
         result, send = self._run_send_message_job({"id": "user-1", "telegram_chat_id": "555"})
         self.assertEqual(result["sent"], 1)
         send.assert_awaited_once()
+
+
+class LogRedactionTests(unittest.TestCase):
+    """Credentials must never reach a log handler, whoever emitted the record."""
+
+    def setUp(self):
+        import test_bot_behavior
+        test_bot_behavior._install_dependency_stubs()
+        import importlib
+        self.bot = importlib.import_module("bot")
+        self.f = self.bot._SecretRedactingFilter()
+
+    def _scrub(self, text):
+        import logging
+        rec = logging.LogRecord("x", logging.INFO, "p", 1, text, None, None)
+        self.f.filter(rec)
+        return rec.msg
+
+    def test_telegram_token_in_url_is_redacted(self):
+        out = self._scrub("POST https://api.telegram.org/bot1234567890:AAAbbbCCCdddEEEfffGGGhhhIIIjjjKKKlll/getUpdates")
+        self.assertNotIn("AAAbbbCCC", out)
+        self.assertIn("<REDACTED>", out)
+
+    def test_supabase_service_key_is_redacted_despite_underscore_prefix(self):
+        out = self._scrub("SUPABASE_SERVICE_KEY=eyJhbGciOiJIUzI1NiJ9.payloadpart.sigpart")
+        self.assertNotIn("payloadpart", out)
+
+    def test_bearer_value_is_consumed_not_just_the_scheme_word(self):
+        out = self._scrub("Authorization: Bearer sk-verysecretvalue123")
+        self.assertNotIn("verysecret", out)
+
+    def test_jwt_anywhere_is_redacted(self):
+        out = self._scrub("got eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abcdefghijklmno.signature back")
+        self.assertNotIn("abcdefghijklmno", out)
+
+    def test_benign_operational_lines_survive_intact(self):
+        msg = "Poll abc-123: 124 matching, 1 new (48h), 0 price changes -> 1 sent"
+        self.assertEqual(self._scrub(msg), msg)
+
+    def test_args_are_scrubbed_too(self):
+        import logging
+        rec = logging.LogRecord("x", logging.INFO, "p", 1, "url=%s",
+                                ("https://api.telegram.org/bot999999999:ZZZbbbCCCdddEEEfffGGGhhhIIIjjjKKKlll/x",), None)
+        self.f.filter(rec)
+        self.assertNotIn("ZZZbbbCCC", str(rec.args))
+
+    def test_rotation_is_configured_so_logs_cannot_reach_tens_of_megabytes(self):
+        from logging.handlers import RotatingFileHandler
+        handlers = [h for h in self.bot.logging.getLogger().handlers
+                    if isinstance(h, RotatingFileHandler)]
+        self.assertTrue(handlers, "no RotatingFileHandler configured")
+        self.assertLessEqual(handlers[0].maxBytes, 20 * 1024 * 1024)
+        self.assertGreaterEqual(handlers[0].backupCount, 1)
