@@ -10,6 +10,7 @@ import asyncio
 import contextvars
 import io
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 import re
 import socket
@@ -43,19 +44,82 @@ from api import start_api_thread
 
 os.makedirs("logs", exist_ok=True)
 
+
+class _SecretRedactingFilter(logging.Filter):
+    """Strip credentials from every log record, whoever emitted it.
+
+    Raising the httpx log level (below) stops the known leak path, but that is a
+    single opt-out that any new dependency, traceback or f-string can defeat.
+    This filter is the backstop: it rewrites the record itself, so a token
+    cannot reach a handler even if some future code logs a Telegram URL.
+
+    Patterns are matched structurally, not against the live token value, so this
+    keeps working after a rotation.
+    """
+
+    _PATTERNS = (
+        # Telegram bot tokens: <numeric id>:<35-char secret>, usually in a URL.
+        re.compile(r"bot\d{6,}:[A-Za-z0-9_-]{30,}"),
+        re.compile(r"\b\d{8,}:[A-Za-z0-9_-]{30,}\b"),
+        # Supabase/JWT-shaped bearer values.
+        re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}"),
+        # header/kwarg style credentials. Two subtleties, both found by tests:
+        #   * the scheme word must be consumed too, or "Authorization: Bearer
+        #     <secret>" only loses the word "Bearer" and leaks the value.
+        #   * no leading \b — in SUPABASE_SERVICE_KEY the underscore is a word
+        #     character, so \b never matches before "SERVICE" and the key leaks.
+        re.compile(
+            r"(?i)(apikey|api[_-]?key|authorization|service[_-]?key|secret[_-]?key"
+            r"|secret|token|password)\s*[=:]\s*(?:bearer\s+|basic\s+)?\S+"
+        ),
+        re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-]{8,}"),
+    )
+
+    @classmethod
+    def _scrub(cls, text: str) -> str:
+        for pat in cls._PATTERNS:
+            text = pat.sub("<REDACTED>", text)
+        return text
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            if isinstance(record.msg, str) and record.msg:
+                record.msg = self._scrub(record.msg)
+            if record.args:
+                if isinstance(record.args, dict):
+                    record.args = {k: self._scrub(str(v)) for k, v in record.args.items()}
+                else:
+                    record.args = tuple(self._scrub(str(a)) for a in record.args)
+        except Exception:
+            # Logging must never take the bot down.
+            pass
+        return True
+
+
+# Rotate so logs cannot silently grow to tens of megabytes again (they reached
+# ~43MB before this was added).
+_file_handler = RotatingFileHandler(
+    "logs/bot.log", maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
+)
+_stream_handler = logging.StreamHandler()
+_redactor = _SecretRedactingFilter()
+for _h in (_file_handler, _stream_handler):
+    _h.addFilter(_redactor)
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
-    handlers=[
-        logging.FileHandler("logs/bot.log"),
-        logging.StreamHandler(),
-    ],
+    handlers=[_file_handler, _stream_handler],
 )
 logger = logging.getLogger(__name__)
 # httpx INFO lines include full request URLs. Telegram URLs contain the bot
 # token, so dependency request logging must never be written to bot.log.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
+# Belt and braces: the filter is attached to the root handlers above, but a
+# library that adds its own handler would bypass them.
+for _name in ("httpx", "httpcore", "telegram", "apscheduler"):
+    logging.getLogger(_name).addFilter(_redactor)
 
 config = Config()
 sb = SupabaseManager()
