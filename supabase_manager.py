@@ -36,6 +36,11 @@ def _patch(path: str, params: dict, body: dict) -> list:
     return r.json()
 
 
+def _post(path: str, body: dict, params: dict = None) -> list:
+    r = httpx.post(f"{SUPABASE_URL}/rest/v1/{path}", headers=_headers(), params=params, json=body, timeout=10)
+    r.raise_for_status()
+    return r.json() if r.content else []
+
 def _rpc(fn: str, body: dict):
     r = httpx.post(f"{SUPABASE_URL}/rest/v1/rpc/{fn}", headers=_headers(), json=body, timeout=10)
     r.raise_for_status()
@@ -347,6 +352,39 @@ class SupabaseManager:
             {"is_active": False},
         )
         return bool(rows)
+
+    def record_alert_feedback(
+        self,
+        chat_id: str,
+        search_id: str,
+        listing_id: str,
+        reason_code: str,
+        feedback: str = "irrelevant",
+    ) -> bool:
+        """Append one alert-feedback event. Never mutates the search itself.
+
+        Idempotent: the unique constraint means a second tap on the same
+        listing updates the reason instead of creating a duplicate event.
+        """
+        profile = self.get_profile_by_chat(chat_id)
+        if not profile:
+            return False
+        try:
+            _post(
+                "alert_feedback",
+                {
+                    "user_id": profile["id"],
+                    "search_id": search_id or None,
+                    "listing_id": str(listing_id),
+                    "reason_code": reason_code,
+                    "feedback": feedback,
+                },
+                {"on_conflict": "user_id,search_id,listing_id,feedback"},
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"alert feedback write failed: {e}")
+            return False
 
     def update_search_status(self, search_id: str, match_count: int, notified: bool = False):
         now = datetime.now(timezone.utc).isoformat()

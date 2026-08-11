@@ -182,13 +182,21 @@ class BotBehaviorTests(unittest.IsolatedAsyncioTestCase):
         )
 
         text = telegram_bot.send_message.await_args.args[1]
+        # Card V2 uses Hebrew gershayim (כ״ס / ק״מ) rather than an ASCII quote,
+        # and puts the pause action on its own row. The guarantee under test is
+        # unchanged: every vehicle detail survives and pause stays reachable.
         for expected in [
-            "יד 2", "67,000", "פרטית", "1.8 ל׳", "היברידי", "122 כ\"ס",
+            "יד 2", "67,000", "פרטית", "1.8 ל׳", "היברידי", "122 כ״ס",
             "טסט עד", "חיפה", "בקרת שיוט", "שמור מאוד", "קורולה למשפחה",
         ]:
             self.assertIn(expected, text)
         markup = telegram_bot.send_message.await_args.kwargs["reply_markup"]
-        self.assertEqual(markup.args[0][1][0].kwargs["callback_data"], "pause_search-7")
+        callbacks = [
+            button.kwargs.get("callback_data")
+            for row in markup.args[0]
+            for button in row
+        ]
+        self.assertIn("pause_search-7", callbacks)
 
 
 class TelegramLinkTests(unittest.TestCase):
