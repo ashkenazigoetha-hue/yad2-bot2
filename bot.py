@@ -446,7 +446,10 @@ async def process_email_outbox(context: ContextTypes.DEFAULT_TYPE):
 
 # ── /start ────────────────────────────────────────────────────────────────────
 
-SITE_URL = os.getenv("SITE_URL", "https://carconnoisseur-web-iota.vercel.app").rstrip("/")
+# Fallback is the real customer-facing domain. The vercel.app host is an
+# internal deployment URL — sending it to users leaks infrastructure detail,
+# looks untrustworthy next to the brand, and breaks if the project is renamed.
+SITE_URL = os.getenv("SITE_URL", "https://car-connoisseur.com").rstrip("/")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -1193,12 +1196,57 @@ async def _process_admin_jobs_impl(context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Failed to persist admin job failure: {finish_exc}")
 
 
+# How often the heartbeat actually probes Telegram. The heartbeat itself runs
+# every 30s; probing on every tick would be pointless API traffic, and probing
+# never at all is how a 14-minute outage went unnoticed.
+_TELEGRAM_PROBE_EVERY = timedelta(minutes=2)
+_last_telegram_probe: Optional[datetime] = None
+_telegram_health: dict = {"telegram_ok": None, "telegram_error": None, "telegram_checked_at": None}
+
+
+async def _probe_telegram(bot) -> dict:
+    """Ask Telegram whether we can still talk to it at all.
+
+    getMe is deliberately the probe: it is the cheapest call that fails exactly
+    when the token is revoked or invalid, which is the failure that silently
+    stops every inbound message. A heartbeat that only writes to Supabase says
+    "online" straight through that outage.
+    """
+    checked = datetime.now(timezone.utc).isoformat()
+    try:
+        me = await bot.get_me()
+        return {"telegram_ok": bool(me and me.username), "telegram_error": None,
+                "telegram_checked_at": checked}
+    except Exception as exc:
+        # Never leak the token: log the class and message only.
+        msg = f"{type(exc).__name__}: {exc}"[:300]
+        logger.error(f"Telegram probe FAILED — bot cannot receive or send: {msg}")
+        return {"telegram_ok": False, "telegram_error": msg, "telegram_checked_at": checked}
+
+
 async def heartbeat(context: ContextTypes.DEFAULT_TYPE):
+    global _last_telegram_probe, _telegram_health
+
+    now = datetime.now(timezone.utc)
+    if _last_telegram_probe is None or now - _last_telegram_probe >= _TELEGRAM_PROBE_EVERY:
+        _telegram_health = await _probe_telegram(context.bot)
+        _last_telegram_probe = now
+
+    # A process that cannot reach Telegram is NOT "online" — reporting it as
+    # such is what made the outage invisible.
+    if _telegram_health.get("telegram_ok") is False:
+        state = "degraded"
+    elif _full_poll_lock and _full_poll_lock.locked():
+        state = "scanning"
+    else:
+        state = "online"
+
     await _runtime_update(
-        state="online" if not (_full_poll_lock and _full_poll_lock.locked()) else "scanning",
-        last_heartbeat_at=datetime.now(timezone.utc).isoformat(),
+        state=state,
+        last_heartbeat_at=now.isoformat(),
         version=os.getenv("BOT_VERSION", "dev"),
         host_name=socket.gethostname()[:120],
+        **_telegram_health,
         **_runtime_counters,
     )
 
@@ -1347,15 +1395,20 @@ async def send_listing(
     text = listing_card.fit(card.text, listing_card.CAPTION_LIMIT if photo_url
                             else listing_card.MESSAGE_LIMIT)
 
-    open_label = "פתיחת המודעה ביד2"
-    keyboard = [[InlineKeyboardButton(open_label, url=listing["url"])]]
-    feedback = []
+    # Buttons carry emojis so the action row scans as fast as the card body.
+    keyboard = [[InlineKeyboardButton("🔗 פתיחת המודעה", url=listing["url"])]]
+    row2 = [InlineKeyboardButton("💾 שמירה", callback_data=f"save_{listing.get('id','')}")]
     if search_id:
-        feedback.append(InlineKeyboardButton("לא רלוונטי", callback_data=f"irrelevant_{search_id}_{listing.get('id','')}"))
-    feedback.append(InlineKeyboardButton("ניהול באתר", url=f"{SITE_URL}/dashboard"))
-    keyboard.append(feedback)
+        row2.append(InlineKeyboardButton("👎 לא רלוונטי", callback_data=f"irrelevant_{search_id}_{listing.get('id','')}"))
+    keyboard.append(row2)
     if search_id:
-        keyboard.append([InlineKeyboardButton("השהה חיפוש", callback_data=f"pause_{search_id}")])
+        keyboard.append([InlineKeyboardButton("💡 למה קיבלתי?", callback_data=f"why_{search_id}_{listing.get('id','')}")])
+        keyboard.append([
+            InlineKeyboardButton("⚙️ עריכת החיפוש", url=f"{SITE_URL}/dashboard"),
+            InlineKeyboardButton("⏸️ השהיית החיפוש", callback_data=f"pause_{search_id}"),
+        ])
+    else:
+        keyboard.append([InlineKeyboardButton("⚙️ ניהול באתר", url=f"{SITE_URL}/dashboard")])
     markup = InlineKeyboardMarkup(keyboard)
 
     if photo_url:
@@ -1439,6 +1492,42 @@ async def alert_feedback_reason(update: Update, context: ContextTypes.DEFAULT_TY
             InlineKeyboardButton("עריכת החיפוש", url=f"{SITE_URL}/dashboard")
         ]])
     )
+
+
+
+async def alert_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Record a 'saved' verdict. Same append-only event stream as feedback."""
+    query = update.callback_query
+    listing_id = query.data.replace("save_", "", 1)
+    chat_id = str(query.message.chat_id)
+    saved = await asyncio.to_thread(
+        sb.record_alert_feedback, chat_id, "", listing_id, "saved", "saved"
+    )
+    await query.answer("נשמר ✓" if saved else "לא הצלחתי לשמור כרגע")
+
+
+async def alert_why(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Explain the match from the stored search, never from a model."""
+    query = update.callback_query
+    payload = query.data.replace("why_", "", 1)
+    search_id, _, _ = payload.partition("_")
+    chat_id = str(query.message.chat_id)
+    search = await asyncio.to_thread(sb.get_search_for_chat, search_id, chat_id) \
+        if hasattr(sb, "get_search_for_chat") else None
+    if not search:
+        await query.answer("ההסבר אינו זמין כרגע", show_alert=True)
+        return
+    parts = []
+    if search.get("manufacturer"): parts.append(f"יצרן: {search['manufacturer']}")
+    if search.get("model"): parts.append(f"דגם: {search['model']}")
+    if search.get("year_min") or search.get("year_max"):
+        parts.append(f"שנים: {search.get('year_min') or '—'}–{search.get('year_max') or '—'}")
+    if search.get("price_max"): parts.append(f"עד {search['price_max']:,} ₪")
+    if search.get("km_max"): parts.append(f"עד {search['km_max']:,} ק\"מ")
+    if search.get("hand_max"): parts.append(f"עד יד {search['hand_max']}")
+    text = "המודעה תואמת לחיפוש „" + str(search.get("name", "")) + "”:\n• " + "\n• ".join(parts) \
+        if parts else "המודעה תואמת לחיפוש שהגדרת."
+    await query.answer(text[:200], show_alert=True)
 
 
 
@@ -1893,6 +1982,8 @@ def main():
     app.add_handler(CallbackQueryHandler(check_single, pattern="^chk_"))
     app.add_handler(CallbackQueryHandler(pause_search, pattern="^pause_"))
     app.add_handler(CallbackQueryHandler(alert_irrelevant, pattern="^irrelevant_"))
+    app.add_handler(CallbackQueryHandler(alert_save, pattern="^save_"))
+    app.add_handler(CallbackQueryHandler(alert_why, pattern="^why_"))
     app.add_handler(CallbackQueryHandler(alert_feedback_reason, pattern="^fb_"))
     app.add_handler(CallbackQueryHandler(back_to_list, pattern="^back_to_list$"))
     app.add_error_handler(_error_handler)

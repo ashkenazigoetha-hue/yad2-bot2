@@ -7,6 +7,7 @@ is never silently omitted and never invented.
 
 import os
 import sys
+import types
 import unittest
 from datetime import datetime, timezone
 
@@ -50,16 +51,18 @@ class ContractTests(unittest.TestCase):
     def test_full_listing_renders_every_mandatory_field(self):
         card = render_card(FULL, search_name="יונדאי אלנטרה")
         self.assertEqual(card.missing_fields, [])
-        for token in ("יונדאי אלנטרה", "Supreme", "2024", "132,000",
-                      "יד 1", "32,000 ק״מ", "פרטית", "1.6 ל׳", "היברידי", "139 כ״ס"):
+        for token in ("🚗 רכב: יונדאי אלנטרה", "🏷️ גרסה: Supreme היברידית", "📅 שנה: 2024",
+                      "💰 מחיר: 132,000 ₪", "✋ יד: ראשונה", "🛣️ קילומטראז׳: 32,000 ק״מ",
+                      "👤 בעלות: פרטית", "⚙️ מנוע: 1.6 ל׳ · היברידי", "🐎 כוח: 139 כ״ס",
+                      "📍 אזור: באר שבע והסביבה"):
             self.assertIn(token, card.text, f"missing {token!r}")
 
     def test_empty_listing_marks_every_mandatory_field_missing(self):
         card = render_card({})
         for name in MANDATORY_FIELDS:
             self.assertIn(name, card.missing_fields, f"{name} not reported missing")
-        # and the user is told so explicitly rather than shown a gap
-        self.assertGreaterEqual(card.text.count(NOT_PUBLISHED), 5)
+        # every mandatory field still gets its own labelled line
+        self.assertGreaterEqual(card.text.count(NOT_PUBLISHED), 9)
 
     def test_each_mandatory_field_dropped_individually_is_reported(self):
         """Removing any single field must surface it — never a silent omission."""
@@ -87,7 +90,8 @@ class ContractTests(unittest.TestCase):
         card = render_card({**FULL, "km": 0, "hand": 0, "hand_text": "0"})
         self.assertNotIn("mileage_km", card.missing_fields)
         self.assertNotIn("hand", card.missing_fields)
-        self.assertIn("0 ק״מ", card.text)
+        self.assertIn("🛣️ קילומטראז׳: 0 ק״מ", card.text)
+        self.assertIn("✋ יד: אפס", card.text)
 
     def test_nothing_is_invented_when_source_is_silent(self):
         card = render_card({"vehicle_name": "מאזדה 3"})
@@ -98,7 +102,7 @@ class ContractTests(unittest.TestCase):
 class PriceTests(unittest.TestCase):
     def test_missing_price_says_not_published_and_invents_nothing(self):
         card = render_card({k: v for k, v in FULL.items() if k != "price"})
-        self.assertIn("מחיר לא פורסם", card.text)
+        self.assertIn("💰 מחיר: לא פורסם", card.text)
         self.assertIn("price_current", card.missing_fields)
 
     def test_price_drop_shows_both_prices_and_delta_in_shekels_and_percent(self):
@@ -106,11 +110,9 @@ class PriceTests(unittest.TestCase):
             {**FULL, "price": 78000, "price_previous": 79500},
             event=EVENT_PRICE_DROP,
         )
-        self.assertIn("₪78,000 מחיר חדש", card.text)
-        self.assertIn("<s>₪79,500</s>", card.text)   # struck through, per spec
-        self.assertIn("₪1,500", card.text)
-        self.assertIn("1.9%", card.text)
-        self.assertIn("ירידה", card.text)
+        self.assertIn("💰 <b>מחיר חדש: 78,000 ₪</b>", card.text)
+        self.assertIn("🏷️ מחיר קודם: <s>79,500 ₪</s>", card.text)
+        self.assertIn("📉 ירידה: 1,500 ₪ — 1.9%", card.text)
 
     def test_direction_is_words_not_an_ambiguous_rtl_arrow(self):
         drop = render_card({**FULL, "price": 78000, "price_previous": 79500})
@@ -138,8 +140,8 @@ class SeparationTests(unittest.TestCase):
     def test_search_range_never_reaches_the_headline(self):
         card = render_card(FULL, search_name="יונדאי 2024–2026",
                            match_reasons=["שנתון 2024–2026"])
-        headline = card.text.split("\n")[1]
-        self.assertNotIn("2024–2026", headline)
+        vehicle_line = [l for l in card.text.split("\n") if l.startswith("🚗 רכב:")][0]
+        self.assertNotIn("2024–2026", vehicle_line)
         self.assertIn("2024–2026", card.text.split("למה קיבלת אותה?")[1])
 
     def test_match_reasons_come_from_caller_not_invented(self):
@@ -154,14 +156,14 @@ class TimestampTests(unittest.TestCase):
             detected_at=datetime(2026, 8, 11, 8, 0, tzinfo=timezone.utc),
             last_checked_at=datetime(2026, 8, 11, 12, 16, tzinfo=timezone.utc),
         )
-        self.assertIn("פורסמה במקור: 11.08.2026 10:17", card.text)  # UTC+3
-        self.assertIn("זוהתה אצלנו", card.text)
-        self.assertIn("נבדקה לאחרונה", card.text)
+        self.assertIn("🕐 פורסמה במקור: 11.08.2026 10:17", card.text)  # UTC+3
+        self.assertIn("🔍 זוהתה אצלנו", card.text)
+        self.assertIn("🔄 נבדקה לאחרונה", card.text)
 
     def test_detection_time_is_not_shown_as_publish_time(self):
         card = render_card({k: v for k, v in FULL.items() if k != "listing_date"},
                            detected_at=datetime(2026, 8, 11, 8, 0, tzinfo=timezone.utc))
-        self.assertIn(f"פורסמה במקור: {NOT_PUBLISHED}", card.text)
+        self.assertIn(f"🕐 פורסמה במקור: {NOT_PUBLISHED}", card.text)
         self.assertIn("source_published_at", card.missing_fields)
 
 
@@ -191,7 +193,7 @@ class LimitTests(unittest.TestCase):
 
     def test_mandatory_facts_precede_free_text(self):
         card = render_card({**FULL, "description": "הערה", "features": "תוספת"})
-        self.assertLess(card.text.index("139 כ״ס"), card.text.index("הערות המוכר"))
+        self.assertLess(card.text.index("🐎 כוח: 139 כ״ס"), card.text.index("הערות המוכר"))
 
 
 class GoldenSnapshotTests(unittest.TestCase):
@@ -203,20 +205,23 @@ class GoldenSnapshotTests(unittest.TestCase):
                            last_checked_at=datetime(2026, 8, 11, 12, 16, tzinfo=timezone.utc))
         self.assertEqual(card.text, "\n".join([
             "<b>🚘 מודעה חדשה</b>",
-            "<b>יונדאי אלנטרה Supreme היברידית</b>",
             "",
-            "<b>₪132,000</b>",
+            "🚗 רכב: יונדאי אלנטרה",
+            "🏷️ גרסה: Supreme היברידית",
+            "📅 שנה: 2024",
+            "💰 מחיר: 132,000 ₪",
+            "✋ יד: ראשונה",
+            "🛣️ קילומטראז׳: 32,000 ק״מ",
+            "👤 בעלות: פרטית",
+            "⚙️ מנוע: 1.6 ל׳ · היברידי",
+            "🐎 כוח: 139 כ״ס",
+            "📍 אזור: באר שבע והסביבה",
+            "🕐 פורסמה במקור: 11.08.2026 10:17",
+            "🌐 מקור: יד2",
+            "🔄 נבדקה לאחרונה: 11.08.2026 15:16",
             "",
-            "2024 · 32,000 ק״מ · יד 1 · פרטית",
-            "מנוע: 1.6 ל׳ · היברידי · 139 כ״ס",
-            "אזור באר שבע והסביבה",
-            "",
-            "<b>למה קיבלת אותה?</b>",
-            "יונדאי אלנטרה · שנת 2024 · הנעה היברידית",
-            "",
-            "פורסמה במקור: 11.08.2026 10:17",
-            "מקור: יד2 · נבדקה לאחרונה 11.08.2026 15:16",
-            "חיפוש: יונדאי אלנטרה",
+            "🔎 <b>למה קיבלת אותה?</b>",
+            "מתאימה לחיפוש „יונדאי אלנטרה”: יונדאי אלנטרה, שנת 2024, הנעה היברידית.",
         ]))
 
     def test_golden_price_drop(self):
@@ -229,34 +234,42 @@ class GoldenSnapshotTests(unittest.TestCase):
             event=EVENT_PRICE_DROP,
         )
         self.assertEqual(card.text, "\n".join([
-            "<b>🔻 המחיר ירד</b>",
-            "<b>קיה ספורטאז׳ Premium</b>",
+            "<b>🔻 המחיר ירד!</b>",
             "",
-            "<b>₪78,000 מחיר חדש</b>",
-            "<s>₪79,500</s> מחיר קודם · ירידה של ₪1,500 (1.9%)",
+            "💰 <b>מחיר חדש: 78,000 ₪</b>",
+            "🏷️ מחיר קודם: <s>79,500 ₪</s>",
+            "📉 ירידה: 1,500 ₪ — 1.9%",
             "",
-            "2020 · 105,000 ק״מ · יד 2 · פרטית",
-            "מנוע: 1.6 ל׳ · בנזין · 177 כ״ס",
-            "אזור ירושלים",
-            "",
-            "פורסמה במקור: 07.06.2026 11:49",
-            "מקור: יד2",
+            "🚗 רכב: קיה ספורטאז׳",
+            "🏷️ גרסה: Premium",
+            "📅 שנה: 2020",
+            "✋ יד: שנייה",
+            "🛣️ קילומטראז׳: 105,000 ק״מ",
+            "👤 בעלות: פרטית",
+            "⚙️ מנוע: 1.6 ל׳ · בנזין",
+            "🐎 כוח: 177 כ״ס",
+            "📍 אזור: ירושלים",
+            "🕐 פורסמה במקור: 07.06.2026 11:49",
+            "🌐 מקור: יד2",
         ]))
 
     def test_golden_all_fields_missing(self):
         card = render_card({"vehicle_name": "רכב"})
         self.assertEqual(card.text, "\n".join([
             "<b>🚘 מודעה חדשה</b>",
-            "<b>רכב</b>",
-            f"גרסה/רמת גימור: {NOT_PUBLISHED}",
             "",
-            "<b>מחיר לא פורסם</b>",
-            "",
-            f"{NOT_PUBLISHED} · {NOT_PUBLISHED} · {NOT_PUBLISHED} · {NOT_PUBLISHED}",
-            f"מנוע: {NOT_PUBLISHED} · {NOT_PUBLISHED}",
-            "",
-            f"פורסמה במקור: {NOT_PUBLISHED}",
-            "מקור: יד2",
+            "🚗 רכב: רכב",
+            "🏷️ גרסה: לא פורסם",
+            "📅 שנה: לא פורסם",
+            "💰 מחיר: לא פורסם",
+            "✋ יד: לא פורסם",
+            "🛣️ קילומטראז׳: לא פורסם",
+            "👤 בעלות: לא פורסם",
+            "⚙️ מנוע: לא פורסם",
+            "🐎 כוח: לא פורסם",
+            "📍 אזור: לא פורסם",
+            "🕐 פורסמה במקור: לא פורסם",
+            "🌐 מקור: יד2",
         ]))
 
 
@@ -390,3 +403,70 @@ class LogRedactionTests(unittest.TestCase):
         self.assertTrue(handlers, "no RotatingFileHandler configured")
         self.assertLessEqual(handlers[0].maxBytes, 20 * 1024 * 1024)
         self.assertGreaterEqual(handlers[0].backupCount, 1)
+
+
+class HeartbeatTelegramProbeTests(unittest.TestCase):
+    """A heartbeat that never touches Telegram reported "online" through a
+    14-minute outage in which no message could be received. It must probe."""
+
+    def setUp(self):
+        import test_bot_behavior
+        test_bot_behavior._install_dependency_stubs()
+        import importlib
+        self.bot = importlib.import_module("bot")
+        self.bot._last_telegram_probe = None
+
+    def _run_heartbeat(self, get_me_result=None, get_me_error=None):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        ctx = MagicMock()
+        if get_me_error:
+            ctx.bot.get_me = AsyncMock(side_effect=get_me_error)
+        else:
+            ctx.bot.get_me = AsyncMock(return_value=get_me_result)
+        captured = {}
+
+        async def fake_update(**kw):
+            captured.update(kw)
+
+        with patch.object(self.bot, "_runtime_update", side_effect=fake_update):
+            asyncio.run(self.bot.heartbeat(ctx))
+        return captured
+
+    def test_healthy_telegram_reports_online_and_ok(self):
+        me = types.SimpleNamespace(username="TheCarHunterBot")
+        out = self._run_heartbeat(get_me_result=me)
+        self.assertEqual(out["state"], "online")
+        self.assertTrue(out["telegram_ok"])
+        self.assertIsNone(out["telegram_error"])
+
+    def test_revoked_token_reports_degraded_not_online(self):
+        """The exact 2026-08-12 failure: token revoked, getUpdates dead."""
+        out = self._run_heartbeat(get_me_error=Exception("Unauthorized"))
+        self.assertEqual(out["state"], "degraded")
+        self.assertFalse(out["telegram_ok"])
+        self.assertIn("Unauthorized", out["telegram_error"])
+
+    def test_probe_failure_still_records_a_heartbeat(self):
+        """Losing Telegram must not also lose telemetry — that hides the outage."""
+        out = self._run_heartbeat(get_me_error=Exception("boom"))
+        self.assertIn("last_heartbeat_at", out)
+        self.assertIn("telegram_checked_at", out)
+
+    def test_probe_is_rate_limited_not_run_every_tick(self):
+        me = types.SimpleNamespace(username="TheCarHunterBot")
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+        ctx = MagicMock()
+        ctx.bot.get_me = AsyncMock(return_value=me)
+        async def noop(**kw): pass
+        with patch.object(self.bot, "_runtime_update", side_effect=noop):
+            asyncio.run(self.bot.heartbeat(ctx))
+            asyncio.run(self.bot.heartbeat(ctx))
+            asyncio.run(self.bot.heartbeat(ctx))
+        self.assertEqual(ctx.bot.get_me.await_count, 1)
+
+    def test_error_message_is_truncated_and_carries_no_token(self):
+        out = self._run_heartbeat(get_me_error=Exception("x" * 900))
+        self.assertLessEqual(len(out["telegram_error"]), 320)

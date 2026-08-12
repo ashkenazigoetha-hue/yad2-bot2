@@ -185,9 +185,12 @@ class BotBehaviorTests(unittest.IsolatedAsyncioTestCase):
         # Card V2 uses Hebrew gershayim (כ״ס / ק״מ) rather than an ASCII quote,
         # and puts the pause action on its own row. The guarantee under test is
         # unchanged: every vehicle detail survives and pause stays reachable.
+        # Card V2 puts every field on its own labelled line with an emoji. The
+        # guarantee under test is unchanged: no vehicle detail is lost.
         for expected in [
-            "יד 2", "67,000", "פרטית", "1.8 ל׳", "היברידי", "122 כ״ס",
-            "טסט עד", "חיפה", "בקרת שיוט", "שמור מאוד", "קורולה למשפחה",
+            "✋ יד: שנייה", "🛣️ קילומטראז׳: 67,000 ק״מ", "👤 בעלות: פרטית",
+            "⚙️ מנוע: 1.8 ל׳ · היברידי", "🐎 כוח: 122 כ״ס",
+            "🧪 טסט עד", "📍 אזור: חיפה", "בקרת שיוט", "שמור מאוד", "קורולה למשפחה",
         ]:
             self.assertIn(expected, text)
         markup = telegram_bot.send_message.await_args.kwargs["reply_markup"]
