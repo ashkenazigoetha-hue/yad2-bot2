@@ -446,7 +446,10 @@ async def process_email_outbox(context: ContextTypes.DEFAULT_TYPE):
 
 # ── /start ────────────────────────────────────────────────────────────────────
 
-SITE_URL = os.getenv("SITE_URL", "https://carconnoisseur-web-iota.vercel.app").rstrip("/")
+# Fallback is the real customer-facing domain. The vercel.app host is an
+# internal deployment URL — sending it to users leaks infrastructure detail,
+# looks untrustworthy next to the brand, and breaks if the project is renamed.
+SITE_URL = os.getenv("SITE_URL", "https://car-connoisseur.com").rstrip("/")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
